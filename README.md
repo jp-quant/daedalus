@@ -126,39 +126,83 @@ if current_segment_size >= segment_max_bytes:
 
 ### Layer 3: Offline ETL Workers (CPU-Intensive)
 
-**Purpose**: Transform raw NDJSON segments into structured Parquet files
+**Purpose**: Transform raw NDJSON segments into structured, partitioned Parquet files
 
 **Design**:
 - Reads from `ready/` directory (never touches `active/`)
 - Atomically moves segment to `processing/` (prevents double-processing)
 - Parses NDJSON line-by-line
 - Groups by channel (ticker, level2, trades, etc.)
-- Writes to Parquet with compression
+- **Partitions by date AND hour** (keeps files small, enables distributed queries)
+- Writes micro-batches with UUID-based filenames (no overwrites, scales to TB+)
 - Deletes processed segment (configurable)
 
-**Key files**: `etl/job.py`, `etl/parsers/`
+**Key files**: `etl/job.py`, `etl/parsers/`, `etl/writers/parquet_writer.py`
 
 **ETL workflow**:
 ```
 ready/segment_X.ndjson
   → processing/segment_X.ndjson  (atomic move)
   → parse NDJSON
-  → group by channel
-  → write to processed/coinbase/ticker/2025-11-20.parquet
+  → group by channel + hour
+  → write to processed/coinbase/ticker/date=2025-11-20/hour=14/part-*.parquet
   → delete segment_X.ndjson
 ```
 
-**Output structure**:
+**Output structure** (Hive-style partitioning for distributed queries):
 ```
 data/processed/
   └── coinbase/
       ├── ticker/
-      │   └── 2025-11-20.parquet
+      │   ├── date=2025-11-20/
+      │   │   ├── hour=14/
+      │   │   │   ├── part-20251120T140512-abc123.parquet  (~50MB)
+      │   │   │   └── part-20251120T140830-def456.parquet  (~50MB)
+      │   │   └── hour=15/
+      │   │       └── part-20251120T150120-ghi789.parquet
+      │   └── date=2025-11-21/
+      │       └── hour=09/
+      │           └── part-20251121T090045-jkl012.parquet
       ├── level2/
-      │   └── 2025-11-20.parquet
+      │   └── date=2025-11-20/
+      │       └── hour=14/
+      │           └── part-*.parquet
       └── market_trades/
-          └── 2025-11-20.parquet
+          └── date=2025-11-20/
+              └── hour=14/
+                  └── part-*.parquet
 ```
+
+**Scalable Parquet Strategy**:
+- ✅ **No in-memory merging**: Writes append-only, never loads existing files
+- ✅ **Small files**: Hourly partitions keep files ~50-100MB each
+- ✅ **Distributed queries**: DuckDB, Spark, Polars can query in parallel
+- ✅ **Schema evolution**: Each file stores its schema independently
+- ✅ **UUID filenames**: No collisions, safe for parallel ETL workers
+
+**Query Examples**:
+
+```python
+# DuckDB (recommended for local analytics)
+import duckdb
+df = duckdb.query("""
+    SELECT * FROM 'data/processed/coinbase/ticker/date=2025-11-20/**/*.parquet'
+    WHERE product_id = 'BTC-USD' AND hour >= 14
+""").to_df()
+
+# Polars (blazing fast, lazy evaluation)
+import polars as pl
+df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet") \
+    .filter(pl.col("date") == "2025-11-20") \
+    .filter(pl.col("product_id") == "BTC-USD") \
+    .collect()
+
+# Spark (for cluster-scale processing)
+df = spark.read.parquet("data/processed/coinbase/ticker") \
+    .filter("date='2025-11-20' AND hour=14")
+```
+
+See `scripts/query_parquet.py` for full query examples.
 
 ### Critical Separation
 

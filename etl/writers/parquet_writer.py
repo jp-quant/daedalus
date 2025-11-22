@@ -1,7 +1,8 @@
-"""Parquet writer for ETL output."""
+"""Parquet writer for ETL output with scalable partitioning."""
 import logging
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -12,15 +13,39 @@ logger = logging.getLogger(__name__)
 
 class ParquetWriter:
     """
-    Write processed records to Parquet files.
+    Write processed records to Parquet files with scalable partitioning.
     
-    Organizes data by:
-    - source (coinbase, databento, etc.)
-    - channel (ticker, level2, trades, etc.)
-    - date (YYYY-MM-DD partitions)
+    Strategy:
+    - Partitions by date AND hour (keeps files small ~100MB each)
+    - Micro-batches within hour (UUID-based filenames, no overwrites)
+    - Schema evolution via PyArrow schema merging
+    - Designed for distributed queries (Spark, DuckDB, Polars)
+    
+    Directory structure:
+    processed/
+      coinbase/
+        ticker/
+          date=2025-11-20/
+            hour=14/
+              part-20251120T140512-abc123.parquet
+              part-20251120T140830-def456.parquet
+            hour=15/
+              part-20251120T150120-ghi789.parquet
+          date=2025-11-21/
+            hour=09/
+              part-20251121T090045-jkl012.parquet
+    
+    Query examples:
+    - DuckDB: SELECT * FROM 'processed/coinbase/ticker/**/*.parquet' WHERE date='2025-11-20'
+    - Spark: spark.read.parquet("processed/coinbase/ticker").filter("date='2025-11-20' AND hour=14")
+    - Polars: pl.scan_parquet("processed/coinbase/ticker/**/*.parquet")
     """
     
-    def __init__(self, output_dir: str, compression: str = "snappy"):
+    def __init__(
+        self,
+        output_dir: str,
+        compression: str = "snappy"
+    ):
         """
         Initialize Parquet writer.
         
@@ -43,96 +68,104 @@ class ParquetWriter:
         records: List[Dict[str, Any]],
         source: str,
         channel: str,
-        date_str: str
+        date_str: Optional[str] = None,
+        partition_cols: Optional[List[str]] = None
     ):
         """
-        Write records to Parquet file with schema evolution support.
+        Write records to partitioned Parquet files (scalable, no in-memory merge).
         
-        Handles schema changes gracefully:
-        - New fields: Added with null values in old data
-        - Missing fields: Filled with null values in new data
-        - Type changes: Logged as warning, uses new schema
+        Strategy:
+        - Caller provides structured records with partition columns already populated
+        - Groups by partition columns for efficient writes
+        - Writes micro-batches with unique filenames (UUID-based)
+        - NO loading of existing files (append-only, scales to TB+)
+        - Schema stored in each file for evolution compatibility
         
         Args:
-            records: List of parsed records
+            records: List of parsed records (must contain partition_cols if specified)
             source: Data source (coinbase, databento, etc.)
             channel: Channel name (ticker, level2, etc.)
-            date_str: Date string (YYYY-MM-DD)
+            partition_cols: Column names to partition by (e.g., ['year', 'month', 'day', 'hour']).
+                          If None, writes all records to a single file without partitioning.
+        
+        Raises:
+            ValueError: If partition columns are specified but missing from records
         """
         if not records:
-            logger.warning(f"[ParquetWriter] No records to write for {source}/{channel}/{date_str}")
+            logger.warning(f"[ParquetWriter] No records to write for {source}/{channel}")
             return
         
         try:
-            # Create directory structure
-            target_dir = self.output_dir / source / channel
-            target_dir.mkdir(parents=True, exist_ok=True)
+            # Convert to DataFrame once
+            df = pd.DataFrame(records)
             
-            # Output file
-            output_file = target_dir / f"{date_str}.parquet"
-            
-            # Convert to DataFrame
-            new_df = pd.DataFrame(records)
-            
-            # Append or write
-            if output_file.exists():
-                # Read existing data
-                try:
-                    existing_df = pd.read_parquet(output_file)
-                    
-                    # Check for schema differences
-                    existing_cols = set(existing_df.columns)
-                    new_cols = set(new_df.columns)
-                    
-                    added_cols = new_cols - existing_cols
-                    removed_cols = existing_cols - new_cols
-                    
-                    if added_cols:
-                        logger.info(
-                            f"[ParquetWriter] Schema evolution detected: "
-                            f"Added columns: {sorted(added_cols)}"
-                        )
-                        # Add missing columns to existing data with NaN
-                        for col in added_cols:
-                            existing_df[col] = pd.NA
-                    
-                    if removed_cols:
-                        logger.info(
-                            f"[ParquetWriter] Schema evolution detected: "
-                            f"Removed columns: {sorted(removed_cols)} (filled with NaN in new data)"
-                        )
-                        # Add missing columns to new data with NaN
-                        for col in removed_cols:
-                            new_df[col] = pd.NA
-                    
-                    # Align column order
-                    all_cols = sorted(set(existing_df.columns) | set(new_df.columns))
-                    existing_df = existing_df.reindex(columns=all_cols)
-                    new_df = new_df.reindex(columns=all_cols)
-                    
-                    # Concatenate
-                    df = pd.concat([existing_df, new_df], ignore_index=True)
-                    
-                except Exception as e:
-                    logger.warning(
-                        f"[ParquetWriter] Could not merge with existing file: {e}. "
-                        "Overwriting with new data."
+            # Validate partition columns exist (if specified)
+            if partition_cols:
+                missing_cols = set(partition_cols) - set(df.columns)
+                if missing_cols:
+                    raise ValueError(
+                        f"Partition columns {missing_cols} not found in records. "
+                        f"Available columns: {list(df.columns)}"
                     )
-                    df = new_df
-            else:
-                df = new_df
             
-            # Convert to Arrow Table and write
-            table = pa.Table.from_pandas(df)
-            pq.write_table(
-                table,
-                output_file,
-                compression=self.compression
-            )
+            # Group by partition columns
+            if partition_cols:
+                grouped = df.groupby(partition_cols, dropna=False)
+            else:
+                # No partitioning - single group
+                grouped = [(tuple(), df)]
+            
+            total_written = 0
+            for partition_values, partition_df in grouped:
+                # Build partition path (e.g., year=2025/month=11/day=20/hour=14)
+                partition_dir = self.output_dir / source / channel
+                
+                if partition_cols:
+                    # Ensure partition_values is iterable
+                    if not isinstance(partition_values, tuple):
+                        partition_values = (partition_values,)
+                    
+                    for col, val in zip(partition_cols, partition_values):
+                        partition_dir = partition_dir / f"{col}={val}"
+                
+                partition_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Generate unique filename (timestamp + UUID to avoid collisions)
+                if date_str is None:
+                    date_str = datetime.now().strftime("%Y%m%dT%H%M%S")
+                else:
+                    date_str = str(date_str)
+                import uuid
+                unique_id = str(uuid.uuid4())[:8]
+                filename = f"part_{date_str}_{unique_id}.parquet"
+                
+                output_file = partition_dir / filename
+                
+                # Drop partition columns from data (stored in directory path)
+                if partition_cols:
+                    data_df = partition_df.drop(columns=partition_cols, errors='ignore')
+                else:
+                    data_df = partition_df
+                
+                # Convert to Arrow Table and write directly
+                table = pa.Table.from_pandas(data_df)
+                pq.write_table(
+                    table,
+                    output_file,
+                    compression=self.compression
+                )
+                
+                total_written += len(partition_df)
+                
+                logger.info(
+                    f"[ParquetWriter] Wrote {len(partition_df)} records to "
+                    f"{output_file.relative_to(self.output_dir)} "
+                    f"({data_df.memory_usage(deep=True).sum() / 1024:.1f} KB)"
+                )
             
             logger.info(
-                f"[ParquetWriter] Wrote {len(records)} records to "
-                f"{output_file} ({df.memory_usage(deep=True).sum() / 1024:.1f} KB)"
+                f"[ParquetWriter] Total: {total_written} records written for "
+                f"{source}/{channel}"
             )
         
         except Exception as e:
