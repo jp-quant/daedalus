@@ -11,9 +11,8 @@ from datetime import datetime, timedelta
 # Derived from your Coinbase CDP API Key
 # SIGNING_KEY: the signing key provided as a part of your API key. Also called the "SECRET KEY"
 # API_KEY: the api key provided as a part of your API key. also called the "API KEY NAME"
-API_KEY = "organizations/227daebb-dce3-41ea-8d95-aafd60da0e52/apiKeys/2f5ae78a-0c91-49ce-bc1e-5fcb0d1bb9a7"
-SIGNING_KEY = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIGimXDT4XQuTis20XL3cr1y2eIkwdSY5PUKE9XqSZj8eoAoGCCqGSM49\nAwEHoUQDQgAEYpWHj36dlEfnolP6gks35ZrzjEsW0KTdiCOQyqOzWhZeKziOy62j\nBLWWP+dC+qD97h670G83EivuBYMm1V0tkQ==\n-----END EC PRIVATE KEY-----\n"
-
+API_KEY = "deactivated wont work lol (my mistake on first commit)"
+SIGNING_KEY = "deactivated wont work lol (my mistake on first commit)"
 ALGORITHM = "ES256"
 
 if not SIGNING_KEY or not API_KEY:
