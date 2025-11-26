@@ -46,7 +46,9 @@ class CoinbaseParser:
             channel = data.get("channel", "unknown")
             
             # Route to channel-specific parser
-            # Note: Coinbase uses different channel names in responses vs subscription
+            # Note: Coinbase uses different channel names in responses vs subscription:
+            # - level2 (subscribe) → l2_data (response)
+            # - ticker (subscribe) → ticker (response)
             if channel == "ticker":
                 return self._parse_ticker(data, capture_ts, metadata)
             elif channel in ("level2", "l2_data"):  # l2_data is actual response name
@@ -140,7 +142,7 @@ class CoinbaseParser:
             for update in event.get("updates", []):
                 try:
                     record = {
-                        "channel": "level2",
+                        "channel": "level2",  # Normalize to 'level2' (from 'l2_data')
                         "event_type": event_type,  # "snapshot" or "update"
                         "product_id": product_id,
                         "side": update.get("side"),  # "bid" or "offer"

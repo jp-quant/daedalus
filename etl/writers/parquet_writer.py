@@ -229,6 +229,6 @@ class ParquetWriter(BaseWriter):
     
     def _generate_unique_filename(self) -> str:
         """Generate unique filename with timestamp and UUID."""
-        timestamp = datetime.now().strftime("%Y%m%d")
+        timestamp = datetime.now().strftime("%Y%m%dT%H")
         unique_id = str(uuid.uuid4())[:8]
         return f"part_{timestamp}_{unique_id}.parquet"

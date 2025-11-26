@@ -197,6 +197,6 @@ class Level2Processor(BaseProcessor):
         """
         # Sort by sequence number if available
         if records and "sequence_num" in records[0]:
-            records = sorted(records, key=lambda r: r.get("sequence_num", 0))
+            records = sorted(records, key=lambda r: (r.get("sequence_num", 0), r.get("event_time", "")))
         
         return super().process_batch(records)
