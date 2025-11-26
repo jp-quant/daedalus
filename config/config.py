@@ -43,6 +43,13 @@ class IngestionConfig(BaseModel):
     segment_max_mb: int = 100  # Max size in MB before rotating segment
 
 
+class ChannelETLConfig(BaseModel):
+    """Per-channel ETL configuration."""
+    enabled: bool = True
+    partition_cols: Optional[list[str]] = None  # e.g., ["product_id", "date"]
+    processor_options: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ETLConfig(BaseModel):
     """ETL layer configuration."""
     input_dir: str = "./data/raw/ready"  # Read from ready/ not active/
@@ -51,6 +58,22 @@ class ETLConfig(BaseModel):
     schedule_cron: Optional[str] = None  # e.g., "0 * * * *" for hourly
     delete_after_processing: bool = True  # Delete raw segments after ETL
     processing_dir: str = "./data/raw/processing"  # Temp dir during ETL
+    
+    # Channel-specific configuration
+    channels: Dict[str, ChannelETLConfig] = Field(default_factory=lambda: {
+        "level2": ChannelETLConfig(
+            partition_cols=["product_id", "date"],
+            processor_options={"add_derived_fields": True}
+        ),
+        "market_trades": ChannelETLConfig(
+            partition_cols=["product_id", "date"],
+            processor_options={"add_derived_fields": True}
+        ),
+        "ticker": ChannelETLConfig(
+            partition_cols=["date", "hour"],
+            processor_options={"add_derived_fields": True}
+        ),
+    })
 
 
 class FluxForgeConfig(BaseModel):

@@ -1,1 +1,5 @@
-"""ETL writers package - output processed data to Parquet/DuckDB/S3."""
+"""ETL writers for various output sinks."""
+from .base_writer import BaseWriter
+from .parquet_writer import ParquetWriter
+
+__all__ = ["BaseWriter", "ParquetWriter"]

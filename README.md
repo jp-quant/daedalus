@@ -29,7 +29,7 @@ FluxForge is a production-grade data ingestion engine that "forges" raw market f
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Configure
+# 2. Configure (copy example and edit with your credentials)
 cp config/secrets.example.yaml config/config.yaml
 # Edit config/config.yaml with your API credentials
 
@@ -39,11 +39,22 @@ python scripts/run_ingestion.py --config config/config.yaml
 # 4. Start continuous ETL (processes data as segments close)
 python scripts/run_etl_watcher.py --poll-interval 30
 
-# 5. Check system health
+# 5. Query processed data
+python scripts/query_parquet.py data/processed/coinbase/ticker
+
+# 6. Check system health
 python scripts/check_health.py
 ```
 
-That's it! Data flows: **WebSocket → NDJSON segments → Parquet files**
+**Data flow**: WebSocket → NDJSON segments → Partitioned Parquet files
+
+**Output structure**:
+```
+data/processed/coinbase/
+  ├── ticker/product_id=BTC-USD/date=2025-11-26/part_*.parquet
+  ├── level2/product_id=BTC-USD/date=2025-11-26/part_*.parquet
+  └── market_trades/product_id=BTC-USD/date=2025-11-26/part_*.parquet
+```
 
 ---
 
@@ -131,21 +142,30 @@ if current_segment_size >= segment_max_bytes:
 **Design**:
 - Reads from `ready/` directory (never touches `active/`)
 - Atomically moves segment to `processing/` (prevents double-processing)
-- Parses NDJSON line-by-line
-- Groups by channel (ticker, level2, trades, etc.)
-- **Partitions by date AND hour** (keeps files small, enables distributed queries)
-- Writes micro-batches with UUID-based filenames (no overwrites, scales to TB+)
+- Uses composable pipeline architecture:
+  - **Readers**: NDJSONReader, ParquetReader (with Polars)
+  - **Processors**: Source-specific transforms (coinbase/, databento/, ibkr/)
+  - **Writers**: Flexible ParquetWriter with Hive-style partitioning
+- Routes channels to specialized processors (level2 → LOB reconstruction, trades → VWAP)
+- **Partitions by product_id AND date** (Hive-style for distributed queries)
 - Deletes processed segment (configurable)
 
-**Key files**: `etl/job.py`, `etl/parsers/`, `etl/writers/parquet_writer.py`
+**Key files**: 
+- `etl/orchestrators/coinbase_segment_pipeline.py` - Multi-channel routing
+- `etl/processors/coinbase/` - Coinbase-specific transforms
+- `etl/parsers/coinbase_parser.py` - Message extraction
+- `etl/writers/parquet_writer.py` - Partitioned output
 
 **ETL workflow**:
 ```
 ready/segment_X.ndjson
   → processing/segment_X.ndjson  (atomic move)
-  → parse NDJSON
-  → group by channel + hour
-  → write to processed/coinbase/ticker/date=2025-11-20/hour=14/part-*.parquet
+  → CoinbaseSegmentPipeline
+      ├─ NDJSONReader
+      ├─ RawParser (extract by channel)
+      ├─ Level2Processor / TradesProcessor / TickerProcessor
+      └─ ParquetWriter (with partitioning)
+  → write to processed/coinbase/{channel}/product_id=X/date=Y/part_*.parquet
   → delete segment_X.ndjson
 ```
 
@@ -154,31 +174,34 @@ ready/segment_X.ndjson
 data/processed/
   └── coinbase/
       ├── ticker/
-      │   ├── date=2025-11-20/
-      │   │   ├── hour=14/
-      │   │   │   ├── part-20251120T140512-abc123.parquet  (~50MB)
-      │   │   │   └── part-20251120T140830-def456.parquet  (~50MB)
-      │   │   └── hour=15/
-      │   │       └── part-20251120T150120-ghi789.parquet
-      │   └── date=2025-11-21/
-      │       └── hour=09/
-      │           └── part-20251121T090045-jkl012.parquet
+      │   ├── product_id=BTC-USD/
+      │   │   ├── date=2025-11-26/
+      │   │   │   ├── part_segment_001_abc123.parquet
+      │   │   │   └── part_segment_002_def456.parquet
+      │   │   └── date=2025-11-27/
+      │   │       └── part_segment_003_ghi789.parquet
+      │   └── product_id=ETH-USD/
+      │       └── date=2025-11-26/
+      │           └── part_segment_001_jkl012.parquet
       ├── level2/
-      │   └── date=2025-11-20/
-      │       └── hour=14/
-      │           └── part-*.parquet
+      │   └── product_id=BTC-USD/
+      │       └── date=2025-11-26/
+      │           └── part_*.parquet
       └── market_trades/
-          └── date=2025-11-20/
-              └── hour=14/
-                  └── part-*.parquet
+          └── product_id=BTC-USD/
+              └── date=2025-11-26/
+                  └── part_*.parquet
 ```
 
 **Scalable Parquet Strategy**:
+- ✅ **Composable ETL**: Reader → Processor → Writer architecture
+- ✅ **Source-specific processors**: `etl/processors/coinbase/`, `databento/`, `ibkr/`
+- ✅ **Channel routing**: Automatic routing to specialized processors
+- ✅ **Flexible partitioning**: Configure partition columns per channel
 - ✅ **No in-memory merging**: Writes append-only, never loads existing files
-- ✅ **Small files**: Hourly partitions keep files ~50-100MB each
+- ✅ **Hive-style partitioning**: Product + date enables efficient filtering
 - ✅ **Distributed queries**: DuckDB, Spark, Polars can query in parallel
 - ✅ **Schema evolution**: Each file stores its schema independently
-- ✅ **UUID filenames**: No collisions, safe for parallel ETL workers
 
 **Query Examples**:
 
@@ -186,20 +209,20 @@ data/processed/
 # DuckDB (recommended for local analytics)
 import duckdb
 df = duckdb.query("""
-    SELECT * FROM 'data/processed/coinbase/ticker/date=2025-11-20/**/*.parquet'
-    WHERE product_id = 'BTC-USD' AND hour >= 14
+    SELECT * FROM 'data/processed/coinbase/ticker/**/*.parquet'
+    WHERE product_id = 'BTC-USD' AND date = '2025-11-26'
 """).to_df()
 
 # Polars (blazing fast, lazy evaluation)
 import polars as pl
 df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet") \
-    .filter(pl.col("date") == "2025-11-20") \
     .filter(pl.col("product_id") == "BTC-USD") \
+    .filter(pl.col("date") == "2025-11-26") \
     .collect()
 
-# Spark (for cluster-scale processing)
-df = spark.read.parquet("data/processed/coinbase/ticker") \
-    .filter("date='2025-11-20' AND hour=14")
+# Pandas (simple and familiar)
+import pandas as pd
+df = pd.read_parquet("data/processed/coinbase/ticker/product_id=BTC-USD/date=2025-11-26")
 ```
 
 See `scripts/query_parquet.py` for full query examples.
@@ -306,6 +329,26 @@ etl:
   compression: "snappy"
   delete_after_processing: true  # Auto-cleanup
   processing_dir: "./data/raw/processing"
+  
+  # Channel-specific ETL configuration
+  channels:
+    level2:
+      partition_cols:
+        - "product_id"
+        - "date"
+      processor_options:
+        compute_mid_price: true
+        compute_spread: true
+    
+    market_trades:
+      partition_cols:
+        - "product_id"
+        - "date"
+    
+    ticker:
+      partition_cols:
+        - "product_id"
+        - "date"
 ```
 
 ### 3. Important: Add to .gitignore
@@ -366,46 +409,49 @@ Process on-demand:
 
 ```bash
 # Process all available segments
-python scripts/run_etl.py --source coinbase --mode all
+python scripts/run_etl.py --mode all
 
 # Process specific date
-python scripts/run_etl.py --source coinbase --mode date --date 2025-11-20
+python scripts/run_etl.py --mode date --date 2025-11-26
 
 # Process date range
-python scripts/run_etl.py --source coinbase --mode range \
-  --start-date 2025-11-15 --end-date 2025-11-20
+python scripts/run_etl.py --mode range \
+  --start-date 2025-11-15 --end-date 2025-11-26
 ```
 
 ### Query Processed Data
 
-Use pandas or DuckDB:
-
 ```python
+# Option 1: Query with DuckDB (recommended)
+python scripts/query_parquet.py data/processed/coinbase/ticker
+
+# Option 2: Use pandas directly
 import pandas as pd
+df = pd.read_parquet("data/processed/coinbase/ticker/product_id=BTC-USD/date=2025-11-26")
+print(df.head())
 
-# Read ticker data
-df = pd.read_parquet("data/processed/coinbase/ticker/2025-11-20.parquet")
-
-# Filter by symbol
-btc = df[df["product_id"] == "BTC-USD"]
-
-# Analyze
-print(btc["price"].describe())
-print(btc.head())
+# Option 3: Use Polars for larger datasets
+import polars as pl
+df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet") \
+    .filter(pl.col("product_id") == "BTC-USD") \
+    .collect()
 ```
 
----
-
-Output will be organized as:
+**Output structure**:
 ```
-data/processed/
-  coinbase/
-    ticker/
-      2025-11-20.parquet
-    level2/
-      2025-11-20.parquet
-    market_trades/
-      2025-11-20.parquet
+data/processed/coinbase/
+  ├── ticker/
+  │   └── product_id=BTC-USD/
+  │       └── date=2025-11-26/
+  │           └── part_*.parquet
+  ├── level2/
+  │   └── product_id=BTC-USD/
+  │       └── date=2025-11-26/
+  │           └── part_*.parquet
+  └── market_trades/
+      └── product_id=BTC-USD/
+          └── date=2025-11-26/
+              └── part_*.parquet
 ```
 
 ## 📁 Directory Structure
@@ -427,11 +473,22 @@ FluxForge/
 │       └── serialization.py
 │
 ├── etl/                    # Layer 3: Transformation
+│   ├── readers/            # Abstract data loading
+│   │   ├── ndjson_reader.py
+│   │   └── parquet_reader.py
+│   ├── processors/         # Transform & aggregate
+│   │   ├── coinbase/       # Coinbase-specific
+│   │   │   ├── level2_processor.py
+│   │   │   ├── trades_processor.py
+│   │   │   └── ticker_processor.py
+│   │   └── raw_parser.py   # Bridge to parsers
 │   ├── parsers/            # Parse NDJSON segments
 │   │   └── coinbase_parser.py
-│   ├── processors/         # Transform & aggregate
 │   ├── writers/            # Parquet writers
 │   │   └── parquet_writer.py
+│   ├── orchestrators/      # Pipeline composition
+│   │   ├── pipeline.py
+│   │   └── coinbase_segment_pipeline.py
 │   └── job.py              # ETL orchestration
 │
 ├── config/                 # Configuration
@@ -477,14 +534,20 @@ data/
 │       └── coinbase/
 │           └── segment_20251120T14_00038.ndjson  (being processed)
 │
-└── processed/              # Parquet files
+└── processed/              # Parquet files (Hive-style partitioning)
     └── coinbase/
         ├── ticker/
-        │   └── 2025-11-20.parquet
+        │   └── product_id=BTC-USD/
+        │       └── date=2025-11-26/
+        │           └── part_*.parquet
         ├── level2/
-        │   └── 2025-11-20.parquet
+        │   └── product_id=BTC-USD/
+        │       └── date=2025-11-26/
+        │           └── part_*.parquet
         └── market_trades/
-            └── 2025-11-20.parquet
+            └── product_id=BTC-USD/
+                └── date=2025-11-26/
+                    └── part_*.parquet
 ```
 
 ---

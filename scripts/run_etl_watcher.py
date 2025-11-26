@@ -48,12 +48,24 @@ class ContinuousETLWatcher:
         # Create ETL job for each configured source
         self.jobs = {}
         if self.config.coinbase:
+            # Convert channel config from Pydantic to dict format
+            channel_config = None
+            if hasattr(self.config.etl, 'channels') and self.config.etl.channels:
+                channel_config = {
+                    channel_name: {
+                        "partition_cols": channel_cfg.partition_cols,
+                        "processor_options": channel_cfg.processor_options,
+                    }
+                    for channel_name, channel_cfg in self.config.etl.channels.items()
+                    if channel_cfg.enabled
+                }
+            
             self.jobs["coinbase"] = ETLJob(
                 input_dir=self.config.etl.input_dir,  # Already points to ready/coinbase
                 output_dir=self.config.etl.output_dir,
-                source="coinbase",
                 delete_after_processing=self.config.etl.delete_after_processing,
                 processing_dir=self.config.etl.processing_dir,
+                channel_config=channel_config,
             )
         
         # Add more sources as needed

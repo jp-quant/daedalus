@@ -1,80 +1,77 @@
-"""ETL job runner - orchestrates parsing and transformation of segment files."""
+"""ETL job runner - orchestrates segment processing using pipelines."""
 import logging
 import os
 from pathlib import Path
-from typing import Optional, List
-from datetime import datetime, timedelta
+from typing import Optional
+from datetime import datetime
 
-from etl.parsers.coinbase_parser import CoinbaseParser
-from etl.writers.parquet_writer import ParquetWriter
-from ingestion.utils.serialization import from_ndjson
-
+from etl.orchestrators.coinbase_segment_pipeline import CoinbaseSegmentPipeline
 
 logger = logging.getLogger(__name__)
 
 
 class ETLJob:
     """
-    ETL job that processes raw NDJSON segment logs into structured Parquet files.
+    Coinbase ETL job that processes raw NDJSON segment logs into structured Parquet files.
+    
+    Uses CoinbaseSegmentPipeline for flexible, composable processing:
+    - Handles Coinbase channel routing and processing
+    - Each channel gets its own processor and partitioning strategy
+    - Easily extensible for new Coinbase channels
     
     Workflow:
     1. Scan ready/ directory for closed segments
     2. Move segment to processing/ (atomic, prevents double-processing)
-    3. Parse and validate records
-    4. Group by source/channel/date
-    5. Write to Parquet
-    6. Delete processed segment (or move to archive)
+    3. Route to CoinbaseSegmentPipeline for processing
+    4. Delete processed segment (or move to archive)
     """
     
     def __init__(
         self,
         input_dir: str,
         output_dir: str,
-        source: str = "coinbase",
         delete_after_processing: bool = True,
         processing_dir: Optional[str] = None,
+        channel_config: Optional[dict] = None,
     ):
         """
-        Initialize ETL job.
+        Initialize Coinbase ETL job.
         
         Args:
             input_dir: Directory containing ready NDJSON segments (ready/)
             output_dir: Directory for Parquet output
-            source: Data source (coinbase, databento, etc.)
             delete_after_processing: Delete raw segments after successful ETL
             processing_dir: Temp directory during processing
+            channel_config: Channel-specific configuration for pipelines
         """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
-        self.source = source
+        self.source = "coinbase"
         self.delete_after_processing = delete_after_processing
         
         # Processing directory (for atomic move)
         if processing_dir:
-            self.processing_dir = Path(processing_dir) / source
+            self.processing_dir = Path(processing_dir) / "coinbase"
         else:
-            self.processing_dir = self.input_dir.parent / "processing" / source
+            self.processing_dir = self.input_dir.parent / "processing" / "coinbase"
         
         self.processing_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize parser
-        if source == "coinbase":
-            self.parser = CoinbaseParser()
-        else:
-            raise ValueError(f"Unsupported source: {source}")
-        
-        # Initialize writer
-        self.writer = ParquetWriter(output_dir=output_dir)
+        # Initialize Coinbase segment pipeline
+        self.pipeline = CoinbaseSegmentPipeline(
+            output_dir=output_dir,
+            channel_config=channel_config,
+        )
         
         logger.info(
-            f"[ETLJob] Initialized: source={source}, "
+            f"[ETLJob] Initialized Coinbase ETL: "
             f"input_dir={input_dir}, output_dir={output_dir}, "
             f"delete_after={delete_after_processing}"
         )
     
     def process_segment(self, segment_file: Path) -> bool:
         """
-        Process a single NDJSON segment file.
+        Process a single NDJSON segment file using pipelines.
         
         Args:
             segment_file: Path to segment file in ready/
@@ -95,71 +92,11 @@ class ETLJob:
             logger.error(f"[ETLJob] Failed to move segment to processing/: {e}")
             return False
         
-        # Group records by channel
-        grouped_records = {}
-        
-        line_count = 0
-        error_count = 0
-        
         try:
-            with open(processing_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line_count += 1
-                    
-                    if not line.strip():
-                        continue
-                    
-                    try:
-                        # Parse NDJSON
-                        raw_record = from_ndjson(line)
-                        
-                        # Parse with source-specific parser
-                        parsed_records = self.parser.parse_record(raw_record)
-                        
-                        if not parsed_records:
-                            continue
-                        
-                        # Handle both single record and list of records
-                        if isinstance(parsed_records, dict):
-                            parsed_records = [parsed_records]
-                        
-                        # Group by channel
-                        for record in parsed_records:
-                            channel = record.get("channel", "unknown")
-                            if channel not in grouped_records:
-                                grouped_records[channel] = []
-                            grouped_records[channel].append(record)
-                    
-                    except Exception as e:
-                        error_count += 1
-                        if error_count <= 10:  # Limit error logging
-                            logger.error(
-                                f"[ETLJob] Error processing line {line_count}: {e}"
-                            )
+            # Process using segment pipeline (handles all channels)
+            self.pipeline.process_segment(processing_file)
             
-            # Extract date from segment filename
-            # Format: segment_20251120T14_00012.ndjson
-            date_str = self._extract_date_from_segment(segment_file.name)
-            
-            # Write each channel to Parquet
-            for channel, records in grouped_records.items():
-                try:
-                    self.writer.write(
-                        records=records,
-                        source=self.source,
-                        channel=channel,
-                        date_str=date_str
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"[ETLJob] Error writing channel {channel}: {e}"
-                    )
-            
-            logger.info(
-                f"[ETLJob] Processed {segment_file.name}: "
-                f"{line_count} lines, {error_count} errors, "
-                f"{len(grouped_records)} channels"
-            )
+            logger.info(f"[ETLJob] Processed {segment_file.name} successfully")
             
             # Delete or archive processed segment
             if self.delete_after_processing:
@@ -169,13 +106,12 @@ class ETLJob:
                 except Exception as e:
                     logger.error(f"[ETLJob] Failed to delete segment: {e}")
             else:
-                # Move to archive (future feature)
                 logger.info(f"[ETLJob] Segment retained in processing/: {segment_file.name}")
             
             return True
         
         except Exception as e:
-            logger.error(f"[ETLJob] Error processing segment {segment_file.name}: {e}")
+            logger.error(f"[ETLJob] Error processing segment {segment_file.name}: {e}", exc_info=True)
             return False
     
     def _extract_date_from_segment(self, filename: str) -> str:
@@ -231,7 +167,7 @@ class ETLJob:
         logger.info(
             f"[ETLJob] Processed {success_count}/{len(segment_files)} segments successfully"
         )
-        logger.info(f"[ETLJob] Parser stats: {self.parser.get_stats()}")
+        logger.info(f"[ETLJob] Pipeline stats: {self.pipeline.get_stats()}")
     
     def process_date_range(
         self,
@@ -288,4 +224,4 @@ class ETLJob:
         logger.info(
             f"[ETLJob] Processed {success_count}/{len(segments_to_process)} segments successfully"
         )
-        logger.info(f"[ETLJob] Parser stats: {self.parser.get_stats()}")
+        logger.info(f"[ETLJob] Pipeline stats: {self.pipeline.get_stats()}")

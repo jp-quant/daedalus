@@ -75,13 +75,25 @@ def main():
     logger.info(f"Source: {args.source}")
     logger.info(f"Mode: {args.mode}")
     
-    # Create ETL job
+    # Convert channel config from Pydantic to dict format
+    channel_config = None
+    if hasattr(config.etl, 'channels') and config.etl.channels:
+        channel_config = {
+            channel_name: {
+                "partition_cols": channel_cfg.partition_cols,
+                "processor_options": channel_cfg.processor_options,
+            }
+            for channel_name, channel_cfg in config.etl.channels.items()
+            if channel_cfg.enabled
+        }
+    
+    # Create ETL job (Coinbase-specific, no source parameter needed)
     job = ETLJob(
         input_dir=config.etl.input_dir,
         output_dir=config.etl.output_dir,
-        source=args.source,
         delete_after_processing=config.etl.delete_after_processing,
         processing_dir=config.etl.processing_dir,
+        channel_config=channel_config,
     )
     
     # Execute based on mode

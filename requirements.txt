@@ -12,6 +12,7 @@ cryptography
 # Data processing
 pandas
 pyarrow
+polars>=0.19.0  # For efficient large-scale data processing with lazy evaluation
 
 # Configuration management
 pydantic
@@ -27,8 +28,8 @@ ruff
 mypy
 
 # Optional: AWS S3 support (uncomment if needed)
-# boto3
-# s3fs
+boto3
+s3fs
 
 # Optional: DuckDB support (uncomment if needed)
 # duckdb
