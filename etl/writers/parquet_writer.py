@@ -168,7 +168,9 @@ class ParquetWriter(BaseWriter):
             
             partition_path.mkdir(parents=True, exist_ok=True)
             
-            # Drop partition columns from data (stored in directory path)
+            # Keep partition columns in data (NOT dropped - preserved for data integrity)
+            # Directory structure provides partition pruning optimization
+            # But columns remain in Parquet for standalone querying
             # data_df = partition_df.drop(columns=partition_cols, errors='ignore')
             data_df = partition_df
 

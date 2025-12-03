@@ -199,15 +199,15 @@ data/processed/
 - ✅ **Channel routing**: Automatic routing to specialized processors
 - ✅ **Flexible partitioning**: Configure partition columns per channel
 - ✅ **No in-memory merging**: Writes append-only, never loads existing files
-- ✅ **Hive-style partitioning**: Product + date enables efficient filtering
+- ✅ **Directory-based partitioning**: Product + date structure enables efficient filtering
 - ✅ **Distributed queries**: DuckDB, Spark, Polars can query in parallel
 - ✅ **Schema evolution**: Each file stores its schema independently
 
-⚠️ **CRITICAL: Hive Partitioning Note**
-- Partition columns (`product_id`, `date`) are stored in **directory names**, not in parquet files
-- When querying with Polars, **must use `hive_partitioning=True`** to restore these columns
-- DuckDB and Pandas handle this automatically
-- Without this flag, you'll get `ColumnNotFoundError` for partition columns
+⚠️ **Partitioning Implementation Note**
+- Partition columns (`product_id`, `date`, `hour`) are stored in **both** directory names AND Parquet data
+- Directory structure provides partition pruning (query optimization)
+- Partition columns are preserved in files (not dropped) for data integrity
+- Query engines can directly filter on partition columns without special flags
 
 **Query Examples**:
 
@@ -220,9 +220,8 @@ df = duckdb.query("""
 """).to_df()
 
 # Polars (blazing fast, lazy evaluation)
-# CRITICAL: Use hive_partitioning=True to restore partition columns from directory structure
 import polars as pl
-df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet", hive_partitioning=True) \
+df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet") \
     .filter(pl.col("product_id") == "BTC-USD") \
     .filter(pl.col("date") == "2025-11-26") \
     .collect()
@@ -438,9 +437,8 @@ df = pd.read_parquet("data/processed/coinbase/ticker/product_id=BTC-USD/date=202
 print(df.head())
 
 # Option 3: Use Polars for larger datasets
-# CRITICAL: Use hive_partitioning=True to restore partition columns from directory structure
 import polars as pl
-df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet", hive_partitioning=True) \
+df = pl.scan_parquet("data/processed/coinbase/ticker/**/*.parquet") \
     .filter(pl.col("product_id") == "BTC-USD") \
     .collect()
 ```
