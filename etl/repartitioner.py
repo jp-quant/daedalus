@@ -53,7 +53,7 @@ class Repartitioner:
         target_dir: str,
         new_partition_cols: List[str],
         compression: str = "snappy",
-        batch_size: int = 1_000_000,
+        batch_size: int = 100_000,
         target_file_size_mb: int = 100,
     ):
         """
@@ -107,9 +107,10 @@ class Repartitioner:
         validate: bool = True,
         dry_run: bool = False,
         transform_fn: Optional[Callable[[pl.DataFrame], pl.DataFrame]] = None,
+        method: str = "streaming",
     ) -> Dict[str, Any]:
         """
-        Execute repartitioning operation.
+        Execute repartitioning operation using specified method.
         
         Args:
             delete_source: Delete source directory after successful repartition
@@ -117,6 +118,10 @@ class Repartitioner:
             dry_run: Print plan without executing
             transform_fn: Optional transformation function to apply during repartition
                          (e.g., add derived columns, filter rows)
+            method: Repartitioning method to use:
+                   - "streaming" (default): True streaming using sink_parquet (most memory-efficient)
+                   - "file_by_file": Process source files individually (good for moderate datasets)
+                   - "batched": Load all and process in batches (fastest but memory-intensive)
         
         Returns:
             Statistics dictionary
@@ -130,13 +135,203 @@ class Repartitioner:
             
             stats = repartitioner.repartition(
                 delete_source=True,
-                transform_fn=add_hour_column
+                transform_fn=add_hour_column,
+                method="streaming"  # Most sophisticated approach
             )
+        """
+        # Validate method
+        valid_methods = ["streaming", "file_by_file", "batched"]
+        if method not in valid_methods:
+            raise ValueError(f"Invalid method '{method}'. Must be one of: {valid_methods}")
+        
+        # Dispatch to appropriate implementation
+        if method == "streaming":
+            return self._repartition_streaming(delete_source, validate, dry_run, transform_fn)
+        elif method == "file_by_file":
+            return self._repartition_file_by_file(delete_source, validate, dry_run, transform_fn)
+        elif method == "batched":
+            return self._repartition_batched(delete_source, validate, dry_run, transform_fn)
+    
+    def _repartition_streaming(
+        self,
+        delete_source: bool,
+        validate: bool,
+        dry_run: bool,
+        transform_fn: Optional[Callable[[pl.DataFrame], pl.DataFrame]],
+    ) -> Dict[str, Any]:
+        """
+        Most sophisticated approach: True streaming using Polars sink_parquet.
+        
+        This method:
+        1. Uses LazyFrame for query optimization
+        2. Streams data without loading into memory
+        3. Writes directly to partitioned structure
+        4. Memory usage: minimal (only streaming buffer)
+        
+        Best for: Very large datasets (TB+)
         """
         self.stats["start_time"] = datetime.now()
         
         logger.info("=" * 80)
-        logger.info("REPARTITIONING OPERATION")
+        logger.info("REPARTITIONING OPERATION (STREAMING MODE)")
+        logger.info("=" * 80)
+        
+        # Step 1: Scan source dataset
+        logger.info(f"[1/5] Scanning source dataset: {self.source_dir}")
+        try:
+            # Use Polars lazy scan for efficiency
+            source_lf = pl.scan_parquet(
+                str(self.source_dir / "**/*.parquet"),
+            )
+            
+            # Get schema
+            schema = source_lf.collect_schema()
+            logger.info(f"  Schema: {schema}")
+            
+            # Validate partition columns exist
+            missing_cols = set(self.new_partition_cols) - set(schema.names())
+            if missing_cols:
+                raise ValueError(
+                    f"Partition columns {missing_cols} not found in source data. "
+                    f"Available columns: {schema.names()}"
+                )
+            
+            # Get row count (if validating)
+            if validate:
+                source_count = source_lf.select(pl.count()).collect().item()
+                logger.info(f"  Source row count: {source_count:,}")
+            
+        except Exception as e:
+            logger.error(f"Error scanning source dataset: {e}", exc_info=True)
+            self.stats["errors"] += 1
+            raise
+        
+        # Step 2: Apply transformation if provided
+        if transform_fn:
+            logger.info(f"[2/5] Applying transformation function")
+            source_lf = source_lf.pipe(transform_fn)
+        else:
+            logger.info(f"[2/5] No transformation applied")
+        
+        # Step 3: Repartition and write using streaming
+        logger.info(f"[3/5] Streaming repartition to new schema: {self.new_partition_cols}")
+        
+        if dry_run:
+            logger.info("  DRY RUN - No files will be written")
+            logger.info(f"  Would create partitions based on: {self.new_partition_cols}")
+            return self.stats
+        
+        try:
+            # Create target directory
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Use sink_parquet for true streaming with partitioning
+            logger.info(f"  Using sink_parquet for zero-copy streaming")
+            logger.info(f"  Writing to: {self.target_dir}")
+            
+            # Note: sink_parquet with partition_by handles everything in streaming fashion
+            source_lf.sink_parquet(
+                pl.PartitionByKey(
+                    self.target_dir,
+                    by=self.new_partition_cols,
+                    include_key=True,
+                ),
+                mkdir=True,
+                compression=self.compression,
+            )
+            
+            # Count results
+            logger.info(f"  Counting output files and records...")
+            output_files = list(self.target_dir.rglob("*.parquet"))
+            self.stats["files_written"] = len(output_files)
+            
+            # Count partitions
+            partition_dirs = set()
+            for f in output_files:
+                partition_dirs.add(f.parent)
+            self.stats["partitions_created"] = len(partition_dirs)
+            
+            # Count records (lazily)
+            target_lf = pl.scan_parquet(str(self.target_dir / "**/*.parquet"))
+            self.stats["records_written"] = target_lf.select(pl.count()).collect().item()
+            
+            logger.info(
+                f"  ✓ Streaming write complete: {self.stats['files_written']} files, "
+                f"{self.stats['records_written']:,} records, {self.stats['partitions_created']} partitions"
+            )
+        
+        except Exception as e:
+            logger.error(f"Error during streaming repartition: {e}", exc_info=True)
+            self.stats["errors"] += 1
+            raise
+        
+        # Step 4: Validate row counts
+        if validate:
+            logger.info(f"[4/5] Validating row counts")
+            try:
+                if self.stats["records_written"] != source_count:
+                    raise ValueError(
+                        f"Row count mismatch! Source: {source_count:,}, Target: {self.stats['records_written']:,}"
+                    )
+                
+                logger.info(f"  ✓ Validation passed: {self.stats['records_written']:,} rows match")
+            
+            except Exception as e:
+                logger.error(f"Validation failed: {e}", exc_info=True)
+                self.stats["errors"] += 1
+                raise
+        else:
+            logger.info(f"[4/5] Skipping validation")
+        
+        # Step 5: Delete source if requested
+        if delete_source:
+            logger.info(f"[5/5] Deleting source directory: {self.source_dir}")
+            try:
+                shutil.rmtree(self.source_dir)
+                logger.info(f"  ✓ Source directory deleted")
+            except Exception as e:
+                logger.error(f"Error deleting source: {e}", exc_info=True)
+                self.stats["errors"] += 1
+        else:
+            logger.info(f"[5/5] Keeping source directory (delete_source=False)")
+        
+        self.stats["end_time"] = datetime.now()
+        elapsed = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
+        
+        logger.info("=" * 80)
+        logger.info("REPARTITIONING SUMMARY (STREAMING)")
+        logger.info("=" * 80)
+        logger.info(f"  Records processed: {self.stats['records_written']:,}")
+        logger.info(f"  Files written: {self.stats['files_written']}")
+        logger.info(f"  Partitions created: {self.stats['partitions_created']}")
+        logger.info(f"  Elapsed time: {elapsed:.2f}s")
+        logger.info(f"  Throughput: {self.stats['records_written'] / elapsed:,.0f} records/sec")
+        logger.info("=" * 80)
+        
+        return self.stats
+    
+    def _repartition_file_by_file(
+        self,
+        delete_source: bool,
+        validate: bool,
+        dry_run: bool,
+        transform_fn: Optional[Callable[[pl.DataFrame], pl.DataFrame]],
+    ) -> Dict[str, Any]:
+        """
+        Process source files individually without loading full dataset.
+        
+        This method:
+        1. Finds all source Parquet files
+        2. Processes each file independently
+        3. Writes to new partition structure
+        4. Memory usage: bounded by largest single file
+        
+        Best for: Moderate datasets where files fit in memory individually
+        """
+        self.stats["start_time"] = datetime.now()
+        
+        logger.info("=" * 80)
+        logger.info("REPARTITIONING OPERATION (FILE-BY-FILE MODE)")
         logger.info("=" * 80)
         
         # Step 1: Scan source dataset
@@ -189,48 +384,85 @@ class Repartitioner:
             # Create target directory
             self.target_dir.mkdir(parents=True, exist_ok=True)
             
-            # Process in batches using streaming
-            logger.info(f"  Processing in batches of {self.batch_size:,} rows")
+            # True streaming approach: Process source files individually
+            # This avoids loading entire dataset into memory
+            logger.info(f"  Processing source files individually (streaming mode)")
             
-            # Collect and write with Hive-style partitioning
-            df = source_lf.collect()
-            self.stats["records_read"] = len(df)
+            source_files = list(self.source_dir.rglob("*.parquet"))
+            total_files = len(source_files)
+            logger.info(f"  Found {total_files} source files to process")
             
-            # Group by partition columns and write
-            grouped = df.groupby(self.new_partition_cols, maintain_order=True)
+            partition_dirs_written = set()
             
-            for partition_key, partition_df in grouped:
-                # Build partition path
-                partition_path = self.target_dir
+            for file_idx, source_file in enumerate(source_files, 1):
+                logger.debug(f"  Processing file {file_idx}/{total_files}: {source_file.name}")
                 
-                if isinstance(partition_key, tuple):
+                # Read one source file at a time
+                df = pl.read_parquet(source_file)
+                file_rows = len(df)
+                self.stats["records_read"] += file_rows
+                self.stats["files_read"] += 1
+                
+                # Apply transformation if provided
+                if transform_fn:
+                    df = transform_fn(df)
+                
+                # Group by partition columns
+                grouped = df.group_by(self.new_partition_cols, maintain_order=True)
+                
+                for partition_key, partition_df in grouped:
+                    # Normalize partition key to tuple
+                    if not isinstance(partition_key, tuple):
+                        partition_key = (partition_key,)
+                    
+                    # Build partition path
+                    partition_path = self.target_dir
                     for col, val in zip(self.new_partition_cols, partition_key):
                         partition_path = partition_path / f"{col}={val}"
-                else:
-                    # Single partition column
-                    partition_path = partition_path / f"{self.new_partition_cols[0]}={partition_key}"
+                    
+                    partition_path.mkdir(parents=True, exist_ok=True)
+                    partition_dirs_written.add(partition_path)
+                    
+                    # Write intermediate file
+                    # Multiple source files may write to same partition
+                    timestamp = datetime.now().strftime("%Y%m%dT%H")
+                    unique_id = str(uuid.uuid4())[:8]
+                    output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
+                    partition_df.write_parquet(
+                        output_file,
+                        compression=self.compression,
+                    )
+                    
+                    self.stats["files_written"] += 1
+                    self.stats["records_written"] += len(partition_df)
                 
-                partition_path.mkdir(parents=True, exist_ok=True)
-                
-                # Write partition with unique filename (timestamp + UUID)
-                timestamp = datetime.now().strftime("%Y%m%dT%H")
-                unique_id = str(uuid.uuid4())[:8]
-                output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
-                partition_df.write_parquet(
-                    output_file,
-                    compression=self.compression,
-                )
-                
-                self.stats["files_written"] += 1
-                self.stats["records_written"] += len(partition_df)
-                
-                logger.debug(f"  Wrote partition: {partition_path.relative_to(self.target_dir)}")
+                # Log progress every 10% of files
+                if file_idx % max(1, total_files // 10) == 0:
+                    progress_pct = (file_idx / total_files) * 100
+                    logger.info(
+                        f"  Progress: {progress_pct:.0f}% ({file_idx}/{total_files} files, "
+                        f"{self.stats['records_written']:,} records)"
+                    )
             
-            self.stats["partitions_created"] = self.stats["files_written"]
+            self.stats["partitions_created"] = len(partition_dirs_written)
+            
+            logger.info(
+                f"  ✓ File processing complete: {total_files} source files, "
+                f"{self.stats['files_written']} output files, {self.stats['records_written']:,} records"
+            )
+            
+            # Note: Multiple files per partition may exist after batch processing
+            # Use ParquetCompactor separately if consolidation is needed
+            if self.stats["files_written"] > len(partition_dirs_written) * 2:
+                logger.info(
+                    f"\n  ℹ️  Multiple files per partition created ({self.stats['files_written']} files across "
+                    f"{len(partition_dirs_written)} partitions)"
+                )
+                logger.info(f"  Consider running ParquetCompactor to consolidate files")
             
             logger.info(
                 f"  ✓ Repartitioning complete: {self.stats['files_written']} files, "
-                f"{self.stats['records_written']:,} records"
+                f"{self.stats['partitions_created']} partitions"
             )
         
         except Exception as e:
@@ -278,7 +510,160 @@ class Repartitioner:
         elapsed = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
         
         logger.info("=" * 80)
-        logger.info("REPARTITIONING SUMMARY")
+        logger.info("REPARTITIONING SUMMARY (FILE-BY-FILE)")
+        logger.info("=" * 80)
+        logger.info(f"  Records processed: {self.stats['records_written']:,}")
+        logger.info(f"  Files written: {self.stats['files_written']}")
+        logger.info(f"  Partitions created: {self.stats['partitions_created']}")
+        logger.info(f"  Elapsed time: {elapsed:.2f}s")
+        logger.info(f"  Throughput: {self.stats['records_written'] / elapsed:,.0f} records/sec")
+        logger.info("=" * 80)
+        
+        return self.stats
+    
+    def _repartition_batched(
+        self,
+        delete_source: bool,
+        validate: bool,
+        dry_run: bool,
+        transform_fn: Optional[Callable[[pl.DataFrame], pl.DataFrame]],
+    ) -> Dict[str, Any]:
+        """
+        Load full dataset and process in batches.
+        
+        This method:
+        1. Collects entire dataset into memory
+        2. Processes in configurable batch sizes
+        3. Fastest but requires sufficient RAM
+        4. Memory usage: full dataset size
+        
+        Best for: Small-to-medium datasets that fit comfortably in RAM
+        """
+        self.stats["start_time"] = datetime.now()
+        
+        logger.info("=" * 80)
+        logger.info("REPARTITIONING OPERATION (BATCHED MODE)")
+        logger.info("=" * 80)
+        logger.warning("  ⚠️  This mode loads entire dataset into memory")
+        
+        # Implementation similar to original batched approach
+        # (keeping existing logic for this method)
+        logger.info(f"[1/5] Scanning source dataset: {self.source_dir}")
+        try:
+            source_lf = pl.scan_parquet(
+                str(self.source_dir / "**/*.parquet"),
+            )
+            
+            schema = source_lf.collect_schema()
+            logger.info(f"  Schema: {schema}")
+            
+            missing_cols = set(self.new_partition_cols) - set(schema.names())
+            if missing_cols:
+                raise ValueError(
+                    f"Partition columns {missing_cols} not found in source data. "
+                    f"Available columns: {schema.names()}"
+                )
+            
+            if validate:
+                source_count = source_lf.select(pl.count()).collect().item()
+                logger.info(f"  Source row count: {source_count:,}")
+        
+        except Exception as e:
+            logger.error(f"Error scanning source dataset: {e}", exc_info=True)
+            self.stats["errors"] += 1
+            raise
+        
+        if transform_fn:
+            logger.info(f"[2/5] Applying transformation function")
+            source_lf = source_lf.pipe(transform_fn)
+        else:
+            logger.info(f"[2/5] No transformation applied")
+        
+        logger.info(f"[3/5] Loading and batching data")
+        
+        if dry_run:
+            logger.info("  DRY RUN - No files will be written")
+            return self.stats
+        
+        try:
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Collect full dataset
+            logger.info(f"  Collecting full dataset into memory...")
+            full_df = source_lf.collect()
+            self.stats["records_read"] = len(full_df)
+            logger.info(f"  Loaded {len(full_df):,} rows")
+            
+            # Process in batches
+            logger.info(f"  Processing in batches of {self.batch_size:,} rows")
+            partition_dirs_written = set()
+            
+            for batch_idx, batch_df in enumerate(full_df.iter_slices(self.batch_size), 1):
+                grouped = batch_df.group_by(self.new_partition_cols, maintain_order=True)
+                
+                for partition_key, partition_df in grouped:
+                    if not isinstance(partition_key, tuple):
+                        partition_key = (partition_key,)
+                    
+                    partition_path = self.target_dir
+                    for col, val in zip(self.new_partition_cols, partition_key):
+                        partition_path = partition_path / f"{col}={val}"
+                    
+                    partition_path.mkdir(parents=True, exist_ok=True)
+                    partition_dirs_written.add(partition_path)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%dT%H")
+                    unique_id = str(uuid.uuid4())[:8]
+                    output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
+                    partition_df.write_parquet(output_file, compression=self.compression)
+                    
+                    self.stats["files_written"] += 1
+                    self.stats["records_written"] += len(partition_df)
+                
+                if batch_idx % 10 == 0:
+                    logger.info(f"  Processed batch {batch_idx}, {self.stats['records_written']:,} records written")
+            
+            self.stats["partitions_created"] = len(partition_dirs_written)
+            logger.info(f"  ✓ Batched processing complete")
+        
+        except Exception as e:
+            logger.error(f"Error during batched repartition: {e}", exc_info=True)
+            self.stats["errors"] += 1
+            raise
+        
+        if validate:
+            logger.info(f"[4/5] Validating row counts")
+            try:
+                target_lf = pl.scan_parquet(str(self.target_dir / "**/*.parquet"))
+                target_count = target_lf.select(pl.count()).collect().item()
+                
+                if target_count != source_count:
+                    raise ValueError(f"Row count mismatch! Source: {source_count:,}, Target: {target_count:,}")
+                
+                logger.info(f"  ✓ Validation passed: {target_count:,} rows match")
+            except Exception as e:
+                logger.error(f"Validation failed: {e}", exc_info=True)
+                self.stats["errors"] += 1
+                raise
+        else:
+            logger.info(f"[4/5] Skipping validation")
+        
+        if delete_source:
+            logger.info(f"[5/5] Deleting source directory: {self.source_dir}")
+            try:
+                shutil.rmtree(self.source_dir)
+                logger.info(f"  ✓ Source directory deleted")
+            except Exception as e:
+                logger.error(f"Error deleting source: {e}", exc_info=True)
+                self.stats["errors"] += 1
+        else:
+            logger.info(f"[5/5] Keeping source directory (delete_source=False)")
+        
+        self.stats["end_time"] = datetime.now()
+        elapsed = (self.stats["end_time"] - self.stats["start_time"]).total_seconds()
+        
+        logger.info("=" * 80)
+        logger.info("REPARTITIONING SUMMARY (BATCHED)")
         logger.info("=" * 80)
         logger.info(f"  Records processed: {self.stats['records_written']:,}")
         logger.info(f"  Files written: {self.stats['files_written']}")
@@ -307,7 +692,7 @@ class Repartitioner:
             # Get partition counts
             partition_stats = (
                 source_lf
-                .groupby(self.new_partition_cols)
+                .group_by(self.new_partition_cols)
                 .agg([
                     pl.count().alias("row_count"),
                 ])

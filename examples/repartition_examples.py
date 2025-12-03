@@ -2,9 +2,10 @@
 Example usage of Repartitioner and ParquetCompactor.
 
 Demonstrates:
-1. Changing partition schema (repartitioning)
-2. File consolidation (compaction)
-3. Best practices and common patterns
+1. Three repartitioning methods: streaming, file_by_file, batched
+2. Changing partition schema (repartitioning)
+3. File consolidation (compaction)
+4. Best practices and common patterns
 """
 import logging
 from pathlib import Path
@@ -20,23 +21,29 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Example 1: Change Partition Schema
+# Example 1: STREAMING Repartitioning (Most Sophisticated)
 # =============================================================================
 
-def example_repartition_simple():
+def example_repartition_streaming():
     """
-    Change from ['product_id', 'date'] to ['product_id', 'year', 'month', 'day'].
+    STREAMING method: Uses sink_parquet for zero-copy streaming.
     
-    Use case: Finer-grained partitioning for faster queries on specific days.
+    Characteristics:
+    - Memory usage: Minimal (~100MB streaming buffer)
+    - Best for: Very large datasets (TB+)
+    - Speed: Fast (Polars-optimized streaming)
+    - Default method (recommended for production)
+    
+    Use case: Change from coarse to fine-grained partitioning on large dataset.
     """
     logger.info("=" * 80)
-    logger.info("Example 1: Simple Repartitioning")
+    logger.info("Example 1: STREAMING Repartitioning (Most Sophisticated)")
     logger.info("=" * 80)
     
     repartitioner = Repartitioner(
         source_dir="F:/processed/coinbase/level2",
-        target_dir="F:/processed/coinbase/level2_new",
-        new_partition_cols=['product_id', 'year', 'month', 'day'],
+        target_dir="F:/processed/coinbase/level2_streaming",
+        new_partition_cols=['product_id', 'year', 'month', 'day', 'hour'],
     )
     
     # Estimate before executing
@@ -44,81 +51,222 @@ def example_repartition_simple():
     logger.info(f"Estimated partitions: {estimates['num_partitions']}")
     logger.info(f"Estimated size: {estimates['estimated_size_mb']:.1f} MB")
     
-    # Execute repartition
+    # Execute with streaming method (default)
     stats = repartitioner.repartition(
-        delete_source=False,  # Keep source for safety (delete manually later)
+        method="streaming",   # Zero-copy streaming with sink_parquet
+        delete_source=False,  # Keep source for safety
         validate=True,        # Verify row counts match
         dry_run=False,        # Set to True to preview only
     )
     
-    logger.info(f"\n✓ Repartitioning complete!")
-    logger.info(f"  New location: F:/processed/coinbase/level2_new")
+    logger.info(f"\n✓ Streaming repartition complete!")
+    logger.info(f"  New location: F:/processed/coinbase/level2_streaming")
     logger.info(f"  Records: {stats['records_written']:,}")
     logger.info(f"  Files: {stats['files_written']}")
+    logger.info(f"  Partitions: {stats['partitions_created']}")
+    logger.info(f"  Memory usage: Minimal (streaming buffer only)")
 
 
-def example_repartition_with_hour():
+# =============================================================================
+# Example 2: FILE-BY-FILE Repartitioning
+# =============================================================================
+
+def example_repartition_file_by_file():
     """
-    Change from ['date', 'hour'] to ['product_id', 'year', 'month', 'day', 'hour'].
+    FILE-BY-FILE method: Processes source files individually.
     
-    Use case: Add product_id partitioning to ticker data for per-product queries.
+    Characteristics:
+    - Memory usage: Bounded by largest single source file
+    - Best for: Moderate datasets (GB-TB range)
+    - Speed: Moderate (file-by-file processing)
+    - Good compromise between memory and speed
+    
+    Use case: Add product_id partitioning when memory is limited.
     """
     logger.info("=" * 80)
-    logger.info("Example 2: Add Product ID Partition")
+    logger.info("Example 2: FILE-BY-FILE Repartitioning")
     logger.info("=" * 80)
     
     repartitioner = Repartitioner(
         source_dir="F:/processed/coinbase/ticker",
-        target_dir="F:/processed/coinbase/ticker_new",
-        new_partition_cols=['product_id', 'year', 'month', 'day', 'hour'],
+        target_dir="F:/processed/coinbase/ticker_fbf",
+        new_partition_cols=['product_id', 'year', 'month', 'day'],
     )
     
+    # Execute with file-by-file method
     stats = repartitioner.repartition(
+        method="file_by_file",  # Process files one at a time
         delete_source=False,
         validate=True,
+        dry_run=False,
     )
     
-    logger.info(f"\n✓ Complete! Created {stats['partitions_created']} partitions")
+    logger.info(f"\n✓ File-by-file repartition complete!")
+    logger.info(f"  Processed {stats['files_read']} source files")
+    logger.info(f"  Created {stats['files_written']} output files")
+    logger.info(f"  Partitions: {stats['partitions_created']}")
+    logger.info(f"  Memory usage: Bounded by largest file")
 
+
+# =============================================================================
+# Example 3: BATCHED Repartitioning
+# =============================================================================
+
+def example_repartition_batched():
+    """
+    BATCHED method: Loads full dataset into memory.
+    
+    Characteristics:
+    - Memory usage: Full dataset size (⚠️ HIGH)
+    - Best for: Small datasets (MB-GB range)
+    - Speed: Fastest (in-memory operations)
+    - ⚠️ Only use if dataset fits comfortably in RAM
+    
+    Use case: Quick repartitioning of small market_trades dataset.
+    """
+    logger.info("=" * 80)
+    logger.info("Example 3: BATCHED Repartitioning (Memory-Intensive)")
+    logger.info("=" * 80)
+    logger.warning("⚠️  This method loads entire dataset into memory!")
+    
+    repartitioner = Repartitioner(
+        source_dir="F:/processed/coinbase/market_trades",
+        target_dir="F:/processed/coinbase/market_trades_batch",
+        new_partition_cols=['product_id', 'date'],  # Coarser partitioning
+        batch_size=50_000,  # Batch size for processing
+    )
+    
+    # Check size first
+    estimates = repartitioner.estimate_size()
+    size_gb = estimates['estimated_size_mb'] / 1024
+    
+    if size_gb > 10:  # More than 10GB
+        logger.warning(f"Dataset is {size_gb:.1f} GB - consider using streaming or file_by_file method")
+        return
+    
+    # Execute with batched method
+    stats = repartitioner.repartition(
+        method="batched",  # Load all into memory
+        delete_source=False,
+        validate=True,
+        dry_run=False,
+    )
+    
+    logger.info(f"\n✓ Batched repartition complete!")
+    logger.info(f"  Records: {stats['records_written']:,}")
+    logger.info(f"  Files: {stats['files_written']}")
+    logger.info(f"  Speed: Fastest (in-memory)")
+    logger.info(f"  ⚠️ Memory usage: Full dataset loaded")
+
+
+# =============================================================================
+# Example 4: Method Comparison
+# =============================================================================
+
+def example_method_comparison():
+    """
+    Demonstrate when to use each method.
+    
+    Decision tree:
+    1. Default: Use streaming (safest, handles any size)
+    2. If streaming too slow: Use file_by_file (good compromise)
+    3. If data is small: Use batched (fastest)
+    """
+    logger.info("=" * 80)
+    logger.info("Example 4: Repartitioning Method Comparison")
+    logger.info("=" * 80)
+    
+    comparison = """
+    ┌─────────────────┬──────────────────────┬─────────────────────┬─────────────────────┐
+    │ Method          │ Memory Usage         │ Best For            │ Speed               │
+    ├─────────────────┼──────────────────────┼─────────────────────┼─────────────────────┤
+    │ STREAMING       │ Minimal (buffer)     │ TB+ datasets        │ Fast (optimized)    │
+    │ (sink_parquet)  │ ~100MB               │ Production use      │ Polars streaming    │
+    ├─────────────────┼──────────────────────┼─────────────────────┼─────────────────────┤
+    │ FILE-BY-FILE    │ Largest single file  │ GB-TB datasets      │ Moderate            │
+    │                 │ Bounded              │ Moderate memory     │ File-by-file reads  │
+    ├─────────────────┼──────────────────────┼─────────────────────┼─────────────────────┤
+    │ BATCHED         │ Full dataset         │ MB-GB datasets      │ Fastest             │
+    │ (iter_slices)   │ ⚠️ HIGH              │ Small data in RAM   │ In-memory ops       │
+    └─────────────────┴──────────────────────┴─────────────────────┴─────────────────────┘
+    
+    RECOMMENDATION:
+    - Default: method="streaming" (most sophisticated, memory-safe)
+    - Moderate data: method="file_by_file" (good compromise)
+    - Small data: method="batched" (fastest if it fits in RAM)
+    
+    EXAMPLE USAGE:
+        repartitioner.repartition(
+            method="streaming",     # Choose: "streaming", "file_by_file", "batched"
+            delete_source=False,    # Safety first
+            validate=True,          # Always validate
+            dry_run=False,          # Set False to execute
+        )
+    """
+    
+    logger.info(comparison)
+
+
+# =============================================================================
+# Example 5: Repartition with Transformation
+# =============================================================================
 
 def example_repartition_with_transform():
     """
     Repartition AND transform data (add/fix columns).
+    
+    Works with all three methods - transformation function is applied
+    during repartitioning regardless of method used.
     
     Use case: Fix data quality issues during schema migration.
     """
     import polars as pl
     
     logger.info("=" * 80)
-    logger.info("Example 3: Repartition with Transformation")
+    logger.info("Example 5: Repartition with Transformation (Any Method)")
     logger.info("=" * 80)
     
-    def fix_side_column(df: pl.DataFrame) -> pl.DataFrame:
-        """Fix side normalization during repartition."""
-        return df.with_columns(
+    def add_derived_columns(df: pl.DataFrame) -> pl.DataFrame:
+        """Add derived columns during repartition."""
+        return df.with_columns([
+            # Normalize side column
             pl.when(pl.col("side") == "offer")
             .then(pl.lit("ask"))
             .otherwise(pl.col("side"))
-            .alias("side_normalized")
-        )
+            .alias("side_normalized"),
+            
+            # Add time-based features
+            pl.col("timestamp").dt.weekday().alias("day_of_week"),
+            pl.col("timestamp").dt.hour().alias("hour_of_day"),
+            
+            # Market hours flag
+            (pl.col("timestamp").dt.hour() >= 9) & 
+            (pl.col("timestamp").dt.hour() < 16)
+            .alias("market_hours")
+        ])
     
     repartitioner = Repartitioner(
         source_dir="F:/processed/coinbase/level2",
-        target_dir="F:/processed/coinbase/level2_fixed",
+        target_dir="F:/processed/coinbase/level2_enhanced",
         new_partition_cols=['product_id', 'year', 'month', 'day'],
     )
     
+    # Works with any method - transformation applied during processing
     stats = repartitioner.repartition(
+        method="streaming",           # Most efficient for large data
         delete_source=False,
         validate=True,
-        transform_fn=fix_side_column,  # Apply transformation
+        transform_fn=add_derived_columns,  # Apply transformation
+        dry_run=False,
     )
     
     logger.info(f"\n✓ Repartitioned and transformed {stats['records_written']:,} rows")
+    logger.info(f"  Method: streaming (with transformation)")
+    logger.info(f"  New columns: side_normalized, day_of_week, hour_of_day, market_hours")
 
 
 # =============================================================================
-# Example 4: File Compaction
+# Example 6: File Compaction
 # =============================================================================
 
 def example_compact_fragmented_files():
@@ -151,7 +299,7 @@ def example_compact_fragmented_files():
 
 
 # =============================================================================
-# Example 5: Complete Migration Workflow
+# Example 7: Complete Migration Workflow
 # =============================================================================
 
 def example_complete_migration():
@@ -159,11 +307,12 @@ def example_complete_migration():
     Complete workflow: Repartition → Validate → Swap → Cleanup.
     
     This is the production-safe way to change partition schemas.
+    Uses streaming method by default for safety.
     """
     import time
     
     logger.info("=" * 80)
-    logger.info("Example 5: Complete Migration Workflow")
+    logger.info("Example 7: Complete Migration Workflow (Production-Safe)")
     logger.info("=" * 80)
     
     source_dir = Path("F:/processed/coinbase/level2")
@@ -179,6 +328,7 @@ def example_complete_migration():
     )
     
     stats = repartitioner.repartition(
+        method="streaming",   # Use most sophisticated method for production
         delete_source=False,
         validate=True,
     )
@@ -238,10 +388,27 @@ if __name__ == "__main__":
     
     # Uncomment one at a time:
     
-    # example_repartition_simple()
-    # example_repartition_with_hour()
+    # Example 1: Streaming repartitioning (most sophisticated, default)
+    # example_repartition_streaming()
+    
+    # Example 2: File-by-file repartitioning (good for moderate datasets)
+    # example_repartition_file_by_file()
+    
+    # Example 3: Batched repartitioning (fastest but memory-intensive)
+    # example_repartition_batched()
+    
+    # Example 4: Method comparison guide
+    # example_method_comparison()
+    
+    # Example 5: Repartition with transformation (works with any method)
     # example_repartition_with_transform()
+    
+    # Example 6: File compaction (consolidate small files)
     # example_compact_fragmented_files()
+    
+    # Example 7: Complete production-safe migration workflow
     # example_complete_migration()
     
-    logger.info("\nExamples ready! Uncomment one to run.")
+    logger.info("\nRepartitioning examples ready!")
+    logger.info("Uncomment one example to run.")
+    logger.info("\nRECOMMENDATION: Start with example_method_comparison() to understand the differences.")
