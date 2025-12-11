@@ -105,7 +105,7 @@ class CcxtCollector(BaseCollector):
         delay_counter = 0
         # 100ms delay between subscriptions to avoid rate limits
         # Adjust this if the exchange is still strict
-        delay_step = 0.1 
+        delay_step = 1
         
         for method, symbols in self.channels.items():
             if not hasattr(self.exchange, method):
@@ -121,7 +121,15 @@ class CcxtCollector(BaseCollector):
                     use_bulk = True
             
             if use_bulk:
-                loops.append(self._bulk_loop(method, bulk_method, symbols))
+                # Batch symbols to avoid rate limits (especially for Coinbase)
+                # Default to 10 as requested for Coinbase Advanced Trade
+                batch_size = self.options.get('orderbook_watch_batch_size', 20)
+                
+                for i in range(0, len(symbols), batch_size):
+                    batch = symbols[i:i + batch_size]
+                    loops.append(self._bulk_loop(method, bulk_method, batch, start_delay=delay_counter * delay_step))
+                    delay_counter += 1
+                    
             elif symbols:
                 # Create a loop for each symbol if the method requires it
                 for symbol in symbols:
@@ -244,8 +252,11 @@ class CcxtCollector(BaseCollector):
                 logger.error(f"Error in {self.exchange_id} {method}: {e}")
                 await asyncio.sleep(self.reconnect_delay)
 
-    async def _bulk_loop(self, method: str, bulk_method: str, symbols: List[str]):
+    async def _bulk_loop(self, method: str, bulk_method: str, symbols: List[str], start_delay: float = 0.0):
         """Loop for bulk subscription methods."""
+        if start_delay > 0:
+            await asyncio.sleep(start_delay)
+            
         logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
         channel_type = self.METHOD_TO_CHANNEL.get(method, method.replace("watch", "").lower())
         

@@ -338,20 +338,18 @@ active_path = "raw/active/coinbase"
 5. **Testability**: Easy to mock StorageBackend for testing
 6. **Extensibility**: Add Azure, GCS, etc. by implementing StorageBackend
 
-## TODO: Remaining Work
+## Implementation Status
 
-1. ✅ Create unified StorageBackend abstraction
-2. ✅ Update config models (StorageConfig, PathConfig)
-3. ✅ Update config.yaml with new structure
-4. ✅ Create IngestionPipeline orchestrator
-5. ✅ Refactor LogWriter to use StorageBackend
-6. ✅ Update run_ingestion.py
-7. ⏳ Refactor ParquetWriter to use StorageBackend
-8. ⏳ Update ETL job to use unified storage
-9. ⏳ Update run_etl_watcher.py
-10. ⏳ Add hybrid storage support (separate configs for ingestion/ETL)
-11. ⏳ Update all examples
-12. ⏳ Add comprehensive tests
+All core unified storage functionality is complete:
+
+- ✅ `StorageBackend` abstraction (`storage/base.py`)
+- ✅ `LocalStorage` and `S3Storage` implementations
+- ✅ `LogWriter` unified implementation (local + S3)
+- ✅ `ParquetWriter` unified implementation (local + S3)
+- ✅ `IngestionPipeline` orchestrator
+- ✅ `ETLJob` uses unified storage
+- ✅ Hybrid storage support (separate ingestion/ETL configs)
+- ✅ Configuration system with explicit per-layer storage
 
 ## Testing
 

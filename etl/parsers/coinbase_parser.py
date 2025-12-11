@@ -85,6 +85,7 @@ class CoinbaseParser:
                 try:
                     record = {
                         "channel": "ticker",
+                        "exchange": "coinbase",
                         "event_type": event.get("type", "unknown"),
                         "symbol": ticker.get("product_id"), # Normalize to 'symbol'
                         "product_id": ticker.get("product_id"),
@@ -144,6 +145,7 @@ class CoinbaseParser:
                 try:
                     record = {
                         "channel": "orderbook",  # Normalize to 'orderbook' (from 'level2'/'l2_data')
+                        "exchange": "coinbase",
                         "event_type": event_type,  # "snapshot" or "update"
                         "symbol": product_id, # Normalize to 'symbol'
                         "product_id": product_id,
@@ -185,6 +187,7 @@ class CoinbaseParser:
                 try:
                     record = {
                         "channel": "trades",  # Normalize to 'trades' (from 'market_trades')
+                        "exchange": "coinbase",
                         "event_type": event.get("type", "unknown"),
                         "trade_id": trade.get("trade_id"),
                         "symbol": trade.get("product_id"), # Normalize to 'symbol'
@@ -227,6 +230,7 @@ class CoinbaseParser:
                 try:
                     record = {
                         "channel": "candles",
+                        "exchange": "coinbase",
                         "event_type": event.get("type", "unknown"),
                         "symbol": candle.get("product_id"), # Normalize to 'symbol'
                         "product_id": candle.get("product_id"),

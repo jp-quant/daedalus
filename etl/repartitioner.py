@@ -10,16 +10,26 @@ This module handles:
 Terminology:
 - Repartitioning: Changing the partition column structure (schema migration)
 - Compaction: Optimizing file sizes within same partition schema (merge small files)
+
+Storage Support:
+- Local filesystem (default)
+- AWS S3 via StorageBackend abstraction
+- Any S3-compatible storage (MinIO, etc.)
 """
+import io
 import logging
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Callable
+from typing import List, Optional, Dict, Any, Callable, Union, TYPE_CHECKING
 from datetime import datetime
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+if TYPE_CHECKING:
+    from storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +43,9 @@ class Repartitioner:
     2. Add/remove partition columns
     3. Consolidate fragmented files
     
-    Example:
+    Works with both local filesystem and S3 storage via StorageBackend.
+    
+    Example (Local):
         # Change from ['product_id', 'date'] to ['product_id', 'year', 'month', 'day']
         repartitioner = Repartitioner(
             source_dir="F:/processed/coinbase/level2",
@@ -45,6 +57,20 @@ class Repartitioner:
             delete_source=True,  # Delete old partition after success
             validate=True,       # Verify row counts match
         )
+    
+    Example (S3):
+        from storage.base import S3Storage
+        
+        storage = S3Storage(bucket="my-bucket", region="us-east-1")
+        
+        repartitioner = Repartitioner(
+            source_dir="processed/ccxt/orderbook",
+            target_dir="processed/ccxt/orderbook_new",
+            new_partition_cols=['exchange', 'symbol', 'year', 'month', 'day'],
+            storage=storage,
+        )
+        
+        repartitioner.repartition(delete_source=True)
     """
     
     def __init__(
@@ -55,31 +81,53 @@ class Repartitioner:
         compression: str = "zstd",
         batch_size: int = 100_000,
         target_file_size_mb: int = 100,
+        storage: Optional["StorageBackend"] = None,
     ):
         """
         Initialize repartitioner.
         
         Args:
-            source_dir: Existing partitioned dataset directory
+            source_dir: Existing partitioned dataset directory (relative to storage root)
             target_dir: New partitioned dataset directory (should not exist or be empty)
             new_partition_cols: New partition column schema
             compression: Parquet compression codec
             batch_size: Rows per processing batch
             target_file_size_mb: Target file size for compaction (not yet implemented)
+            storage: Optional StorageBackend for cloud storage (S3). If None, uses local filesystem.
         """
-        self.source_dir = Path(source_dir)
-        self.target_dir = Path(target_dir)
+        self.storage = storage
         self.new_partition_cols = new_partition_cols
         self.compression = compression
         self.batch_size = batch_size
         self.target_file_size_mb = target_file_size_mb
         
-        # Validate
-        if not self.source_dir.exists():
-            raise ValueError(f"Source directory does not exist: {source_dir}")
-        
-        if self.target_dir.exists() and any(self.target_dir.iterdir()):
-            logger.warning(f"Target directory is not empty: {target_dir}")
+        # Handle paths based on storage type
+        if storage:
+            # S3 or other cloud storage - paths are relative
+            self.source_dir = source_dir
+            self.target_dir = target_dir
+            self._is_local = False
+            
+            # Verify source exists
+            source_files = storage.list_files(source_dir, pattern="**/*.parquet", recursive=True)
+            if not source_files:
+                raise ValueError(f"Source directory has no parquet files: {source_dir}")
+            
+            # Warn if target has files
+            target_files = storage.list_files(target_dir, pattern="**/*.parquet", recursive=True)
+            if target_files:
+                logger.warning(f"Target directory is not empty: {target_dir}")
+        else:
+            # Local filesystem
+            self.source_dir = Path(source_dir)
+            self.target_dir = Path(target_dir)
+            self._is_local = True
+            
+            if not self.source_dir.exists():
+                raise ValueError(f"Source directory does not exist: {source_dir}")
+            
+            if self.target_dir.exists() and any(self.target_dir.iterdir()):
+                logger.warning(f"Target directory is not empty: {target_dir}")
         
         # Stats
         self.stats = {
@@ -93,13 +141,116 @@ class Repartitioner:
             "end_time": None,
         }
         
+        backend_type = storage.backend_type if storage else "local"
         logger.info(
             f"[Repartitioner] Initialized:\n"
+            f"  Backend: {backend_type}\n"
             f"  Source: {source_dir}\n"
             f"  Target: {target_dir}\n"
             f"  New partition cols: {new_partition_cols}\n"
             f"  Compression: {compression}"
         )
+    
+    # =========================================================================
+    # Storage Helper Methods
+    # =========================================================================
+    
+    def _get_source_path(self) -> str:
+        """Get source path formatted for Polars scan_parquet."""
+        if self._is_local:
+            return str(self.source_dir / "**/*.parquet")
+        else:
+            return self.storage.get_full_path(self.storage.join_path(self.source_dir, "**/*.parquet"))
+    
+    def _get_target_path(self) -> str:
+        """Get target path formatted for Polars scan_parquet."""
+        if self._is_local:
+            return str(self.target_dir / "**/*.parquet")
+        else:
+            return self.storage.get_full_path(self.storage.join_path(self.target_dir, "**/*.parquet"))
+    
+    def _get_storage_options(self) -> Optional[Dict[str, Any]]:
+        """Get storage options for Polars."""
+        if self._is_local:
+            return None
+        return self.storage.get_storage_options()
+    
+    def _list_source_files(self) -> List[str]:
+        """List all parquet files in source directory."""
+        if self._is_local:
+            return [str(f) for f in self.source_dir.rglob("*.parquet")]
+        else:
+            files = self.storage.list_files(self.source_dir, pattern="**/*.parquet", recursive=True)
+            return [self.storage.get_full_path(f["path"]) for f in files]
+    
+    def _list_target_files(self) -> List[str]:
+        """List all parquet files in target directory."""
+        if self._is_local:
+            return [str(f) for f in self.target_dir.rglob("*.parquet")]
+        else:
+            files = self.storage.list_files(self.target_dir, pattern="**/*.parquet", recursive=True)
+            return [self.storage.get_full_path(f["path"]) for f in files]
+    
+    def _make_target_dir(self) -> None:
+        """Create target directory."""
+        if self._is_local:
+            self.target_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # S3 doesn't need explicit directory creation
+            pass
+    
+    def _delete_source(self) -> bool:
+        """Delete source directory."""
+        try:
+            if self._is_local:
+                shutil.rmtree(self.source_dir)
+            else:
+                # Delete all files in source directory
+                files = self.storage.list_files(self.source_dir, pattern="**/*.parquet", recursive=True)
+                for f in files:
+                    self.storage.delete(f["path"])
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting source: {e}", exc_info=True)
+            return False
+    
+    def _write_parquet_partition(
+        self,
+        df: pl.DataFrame,
+        partition_path: str,
+    ) -> str:
+        """Write a DataFrame to a partition path."""
+        timestamp = datetime.now().strftime("%Y%m%dT%H")
+        unique_id = str(uuid.uuid4())[:8]
+        filename = f"part_{timestamp}_{unique_id}.parquet"
+        
+        if self._is_local:
+            partition_dir = Path(partition_path)
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            output_file = partition_dir / filename
+            df.write_parquet(str(output_file), compression=self.compression)
+            return str(output_file)
+        else:
+            # S3: Write to buffer then upload
+            file_path = self.storage.join_path(partition_path, filename)
+            buffer = io.BytesIO()
+            df.write_parquet(buffer, compression=self.compression)
+            buffer.seek(0)
+            self.storage.write_bytes(buffer.read(), file_path)
+            return self.storage.get_full_path(file_path)
+    
+    def _get_partition_dirs(self, file_paths: List[str]) -> set:
+        """Get unique partition directories from file paths."""
+        dirs = set()
+        for f in file_paths:
+            if self._is_local:
+                dirs.add(Path(f).parent)
+            else:
+                # Get parent path from S3 key
+                parts = f.rsplit("/", 1)
+                if len(parts) > 1:
+                    dirs.add(parts[0])
+        return dirs
     
     def repartition(
         self,
@@ -169,7 +320,15 @@ class Repartitioner:
         4. Memory usage: minimal (only streaming buffer)
         
         Best for: Very large datasets (TB+)
+        
+        Note: Streaming mode only works with local filesystem currently.
+              For S3, use file_by_file method instead.
         """
+        # Streaming mode only works with local filesystem
+        if not self._is_local:
+            logger.warning("Streaming mode not supported for S3. Falling back to file_by_file method.")
+            return self._repartition_file_by_file(delete_source, validate, dry_run, transform_fn)
+        
         self.stats["start_time"] = datetime.now()
         
         logger.info("=" * 80)
@@ -177,12 +336,11 @@ class Repartitioner:
         logger.info("=" * 80)
         
         # Step 1: Scan source dataset
+        source_path = self._get_source_path()
         logger.info(f"[1/5] Scanning source dataset: {self.source_dir}")
         try:
             # Use Polars lazy scan for efficiency
-            source_lf = pl.scan_parquet(
-                str(self.source_dir / "**/*.parquet"),
-            )
+            source_lf = pl.scan_parquet(source_path)
             
             # Get schema
             schema = source_lf.collect_schema()
@@ -223,7 +381,7 @@ class Repartitioner:
         
         try:
             # Create target directory
-            self.target_dir.mkdir(parents=True, exist_ok=True)
+            self._make_target_dir()
             
             # Use sink_parquet for true streaming with partitioning
             logger.info(f"  Using sink_parquet for zero-copy streaming")
@@ -242,17 +400,16 @@ class Repartitioner:
             
             # Count results
             logger.info(f"  Counting output files and records...")
-            output_files = list(self.target_dir.rglob("*.parquet"))
+            output_files = self._list_target_files()
             self.stats["files_written"] = len(output_files)
             
             # Count partitions
-            partition_dirs = set()
-            for f in output_files:
-                partition_dirs.add(f.parent)
+            partition_dirs = self._get_partition_dirs(output_files)
             self.stats["partitions_created"] = len(partition_dirs)
             
             # Count records (lazily)
-            target_lf = pl.scan_parquet(str(self.target_dir / "**/*.parquet"))
+            target_path = self._get_target_path()
+            target_lf = pl.scan_parquet(target_path)
             self.stats["records_written"] = target_lf.select(pl.count()).collect().item()
             
             logger.info(
@@ -286,11 +443,9 @@ class Repartitioner:
         # Step 5: Delete source if requested
         if delete_source:
             logger.info(f"[5/5] Deleting source directory: {self.source_dir}")
-            try:
-                shutil.rmtree(self.source_dir)
+            if self._delete_source():
                 logger.info(f"  ✓ Source directory deleted")
-            except Exception as e:
-                logger.error(f"Error deleting source: {e}", exc_info=True)
+            else:
                 self.stats["errors"] += 1
         else:
             logger.info(f"[5/5] Keeping source directory (delete_source=False)")
@@ -326,22 +481,27 @@ class Repartitioner:
         3. Writes to new partition structure
         4. Memory usage: bounded by largest single file
         
-        Best for: Moderate datasets where files fit in memory individually
+        Best for: Moderate datasets where files fit in memory individually.
+        Also the recommended method for S3 storage.
         """
         self.stats["start_time"] = datetime.now()
         
+        backend_type = self.storage.backend_type if self.storage else "local"
         logger.info("=" * 80)
-        logger.info("REPARTITIONING OPERATION (FILE-BY-FILE MODE)")
+        logger.info(f"REPARTITIONING OPERATION (FILE-BY-FILE MODE) [{backend_type.upper()}]")
         logger.info("=" * 80)
         
         # Step 1: Scan source dataset
+        source_path = self._get_source_path()
+        storage_options = self._get_storage_options()
         logger.info(f"[1/5] Scanning source dataset: {self.source_dir}")
         try:
             # Use Polars lazy scan for efficiency
             # Note: Partition columns are preserved in the parquet files
-            source_lf = pl.scan_parquet(
-                str(self.source_dir / "**/*.parquet"),
-            )
+            scan_kwargs = {"source": source_path}
+            if storage_options:
+                scan_kwargs["storage_options"] = storage_options
+            source_lf = pl.scan_parquet(**scan_kwargs)
             
             # Get schema
             schema = source_lf.collect_schema()
@@ -382,23 +542,30 @@ class Repartitioner:
         
         try:
             # Create target directory
-            self.target_dir.mkdir(parents=True, exist_ok=True)
+            self._make_target_dir()
             
             # True streaming approach: Process source files individually
             # This avoids loading entire dataset into memory
-            logger.info(f"  Processing source files individually (streaming mode)")
+            logger.info(f"  Processing source files individually")
             
-            source_files = list(self.source_dir.rglob("*.parquet"))
+            source_files = self._list_source_files()
             total_files = len(source_files)
             logger.info(f"  Found {total_files} source files to process")
             
             partition_dirs_written = set()
             
             for file_idx, source_file in enumerate(source_files, 1):
-                logger.debug(f"  Processing file {file_idx}/{total_files}: {source_file.name}")
+                if self._is_local:
+                    filename = Path(source_file).name
+                else:
+                    filename = source_file.rsplit("/", 1)[-1]
+                logger.debug(f"  Processing file {file_idx}/{total_files}: {filename}")
                 
                 # Read one source file at a time
-                df = pl.read_parquet(source_file)
+                read_kwargs = {}
+                if storage_options:
+                    read_kwargs["storage_options"] = storage_options
+                df = pl.read_parquet(source_file, **read_kwargs)
                 file_rows = len(df)
                 self.stats["records_read"] += file_rows
                 self.stats["files_read"] += 1
@@ -416,22 +583,25 @@ class Repartitioner:
                         partition_key = (partition_key,)
                     
                     # Build partition path
-                    partition_path = self.target_dir
-                    for col, val in zip(self.new_partition_cols, partition_key):
-                        partition_path = partition_path / f"{col}={val}"
+                    partition_parts = [f"{col}={val}" for col, val in zip(self.new_partition_cols, partition_key)]
                     
-                    partition_path.mkdir(parents=True, exist_ok=True)
-                    partition_dirs_written.add(partition_path)
-                    
-                    # Write intermediate file
-                    # Multiple source files may write to same partition
-                    timestamp = datetime.now().strftime("%Y%m%dT%H")
-                    unique_id = str(uuid.uuid4())[:8]
-                    output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
-                    partition_df.write_parquet(
-                        output_file,
-                        compression=self.compression,
-                    )
+                    if self._is_local:
+                        partition_path = self.target_dir
+                        for part in partition_parts:
+                            partition_path = partition_path / part
+                        partition_path.mkdir(parents=True, exist_ok=True)
+                        partition_dirs_written.add(partition_path)
+                        
+                        # Write intermediate file
+                        timestamp = datetime.now().strftime("%Y%m%dT%H")
+                        unique_id = str(uuid.uuid4())[:8]
+                        output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
+                        partition_df.write_parquet(str(output_file), compression=self.compression)
+                    else:
+                        # S3: build path and write via storage backend
+                        partition_path = self.storage.join_path(self.target_dir, *partition_parts)
+                        partition_dirs_written.add(partition_path)
+                        self._write_parquet_partition(partition_df, partition_path)
                     
                     self.stats["files_written"] += 1
                     self.stats["records_written"] += len(partition_df)
@@ -474,9 +644,11 @@ class Repartitioner:
         if validate:
             logger.info(f"[4/5] Validating row counts")
             try:
-                target_lf = pl.scan_parquet(
-                    str(self.target_dir / "**/*.parquet"),
-                )
+                target_path = self._get_target_path()
+                scan_kwargs = {"source": target_path}
+                if storage_options:
+                    scan_kwargs["storage_options"] = storage_options
+                target_lf = pl.scan_parquet(**scan_kwargs)
                 target_count = target_lf.select(pl.count()).collect().item()
                 
                 if target_count != source_count:
@@ -496,13 +668,10 @@ class Repartitioner:
         # Step 5: Delete source if requested
         if delete_source:
             logger.info(f"[5/5] Deleting source directory: {self.source_dir}")
-            try:
-                shutil.rmtree(self.source_dir)
+            if self._delete_source():
                 logger.info(f"  ✓ Source directory deleted")
-            except Exception as e:
-                logger.error(f"Error deleting source: {e}", exc_info=True)
+            else:
                 self.stats["errors"] += 1
-                # Don't raise - repartitioning succeeded
         else:
             logger.info(f"[5/5] Keeping source directory (delete_source=False)")
         
@@ -537,22 +706,26 @@ class Repartitioner:
         3. Fastest but requires sufficient RAM
         4. Memory usage: full dataset size
         
-        Best for: Small-to-medium datasets that fit comfortably in RAM
+        Best for: Small-to-medium datasets that fit comfortably in RAM.
+        Works with both local filesystem and S3.
         """
         self.stats["start_time"] = datetime.now()
         
+        backend_type = self.storage.backend_type if self.storage else "local"
         logger.info("=" * 80)
-        logger.info("REPARTITIONING OPERATION (BATCHED MODE)")
+        logger.info(f"REPARTITIONING OPERATION (BATCHED MODE) [{backend_type.upper()}]")
         logger.info("=" * 80)
         logger.warning("  ⚠️  This mode loads entire dataset into memory")
         
-        # Implementation similar to original batched approach
-        # (keeping existing logic for this method)
+        source_path = self._get_source_path()
+        storage_options = self._get_storage_options()
+        
         logger.info(f"[1/5] Scanning source dataset: {self.source_dir}")
         try:
-            source_lf = pl.scan_parquet(
-                str(self.source_dir / "**/*.parquet"),
-            )
+            scan_kwargs = {"source": source_path}
+            if storage_options:
+                scan_kwargs["storage_options"] = storage_options
+            source_lf = pl.scan_parquet(**scan_kwargs)
             
             schema = source_lf.collect_schema()
             logger.info(f"  Schema: {schema}")
@@ -586,7 +759,7 @@ class Repartitioner:
             return self.stats
         
         try:
-            self.target_dir.mkdir(parents=True, exist_ok=True)
+            self._make_target_dir()
             
             # Collect full dataset
             logger.info(f"  Collecting full dataset into memory...")
@@ -605,17 +778,23 @@ class Repartitioner:
                     if not isinstance(partition_key, tuple):
                         partition_key = (partition_key,)
                     
-                    partition_path = self.target_dir
-                    for col, val in zip(self.new_partition_cols, partition_key):
-                        partition_path = partition_path / f"{col}={val}"
+                    partition_parts = [f"{col}={val}" for col, val in zip(self.new_partition_cols, partition_key)]
                     
-                    partition_path.mkdir(parents=True, exist_ok=True)
-                    partition_dirs_written.add(partition_path)
-                    
-                    timestamp = datetime.now().strftime("%Y%m%dT%H")
-                    unique_id = str(uuid.uuid4())[:8]
-                    output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
-                    partition_df.write_parquet(output_file, compression=self.compression)
+                    if self._is_local:
+                        partition_path = self.target_dir
+                        for part in partition_parts:
+                            partition_path = partition_path / part
+                        partition_path.mkdir(parents=True, exist_ok=True)
+                        partition_dirs_written.add(partition_path)
+                        
+                        timestamp = datetime.now().strftime("%Y%m%dT%H")
+                        unique_id = str(uuid.uuid4())[:8]
+                        output_file = partition_path / f"part_{timestamp}_{unique_id}.parquet"
+                        partition_df.write_parquet(str(output_file), compression=self.compression)
+                    else:
+                        partition_path = self.storage.join_path(self.target_dir, *partition_parts)
+                        partition_dirs_written.add(partition_path)
+                        self._write_parquet_partition(partition_df, partition_path)
                     
                     self.stats["files_written"] += 1
                     self.stats["records_written"] += len(partition_df)
@@ -634,7 +813,11 @@ class Repartitioner:
         if validate:
             logger.info(f"[4/5] Validating row counts")
             try:
-                target_lf = pl.scan_parquet(str(self.target_dir / "**/*.parquet"))
+                target_path = self._get_target_path()
+                scan_kwargs = {"source": target_path}
+                if storage_options:
+                    scan_kwargs["storage_options"] = storage_options
+                target_lf = pl.scan_parquet(**scan_kwargs)
                 target_count = target_lf.select(pl.count()).collect().item()
                 
                 if target_count != source_count:
@@ -650,11 +833,9 @@ class Repartitioner:
         
         if delete_source:
             logger.info(f"[5/5] Deleting source directory: {self.source_dir}")
-            try:
-                shutil.rmtree(self.source_dir)
+            if self._delete_source():
                 logger.info(f"  ✓ Source directory deleted")
-            except Exception as e:
-                logger.error(f"Error deleting source: {e}", exc_info=True)
+            else:
                 self.stats["errors"] += 1
         else:
             logger.info(f"[5/5] Keeping source directory (delete_source=False)")
@@ -685,9 +866,13 @@ class Repartitioner:
         
         try:
             # Scan source
-            source_lf = pl.scan_parquet(
-                str(self.source_dir / "**/*.parquet"),
-            )
+            source_path = self._get_source_path()
+            storage_options = self._get_storage_options()
+            
+            scan_kwargs = {"source": source_path}
+            if storage_options:
+                scan_kwargs["storage_options"] = storage_options
+            source_lf = pl.scan_parquet(**scan_kwargs)
             
             # Get partition counts
             partition_stats = (
@@ -734,17 +919,31 @@ class ParquetCompactor:
     Consolidates small files into larger, optimally-sized files for better query performance.
     Useful after many incremental writes that create file fragmentation.
     
-    Example:
-        # Compact files in level2 dataset
+    Works with both local filesystem and S3 storage via StorageBackend.
+    
+    Example (Local):
         compactor = ParquetCompactor(
             dataset_dir="F:/processed/coinbase/level2",
             target_file_size_mb=100,
         )
         
         stats = compactor.compact(
-            min_file_count=5,  # Only compact partitions with 5+ files
+            min_file_count=5,
             delete_source_files=True,
         )
+    
+    Example (S3):
+        from storage.base import S3Storage
+        
+        storage = S3Storage(bucket="my-bucket", region="us-east-1")
+        
+        compactor = ParquetCompactor(
+            dataset_dir="processed/ccxt/orderbook",
+            target_file_size_mb=100,
+            storage=storage,
+        )
+        
+        stats = compactor.compact(min_file_count=5)
     """
     
     def __init__(
@@ -752,21 +951,37 @@ class ParquetCompactor:
         dataset_dir: str,
         target_file_size_mb: int = 100,
         compression: str = "zstd",
+        storage: Optional["StorageBackend"] = None,
     ):
         """
         Initialize compactor.
         
         Args:
-            dataset_dir: Partitioned dataset directory
+            dataset_dir: Partitioned dataset directory (relative to storage root for S3)
             target_file_size_mb: Target size for compacted files
             compression: Parquet compression codec
+            storage: Optional StorageBackend for cloud storage (S3). If None, uses local filesystem.
         """
-        self.dataset_dir = Path(dataset_dir)
+        self.storage = storage
         self.target_file_size_mb = target_file_size_mb
         self.compression = compression
         
-        if not self.dataset_dir.exists():
-            raise ValueError(f"Dataset directory does not exist: {dataset_dir}")
+        if storage:
+            # S3 or other cloud storage
+            self.dataset_dir = dataset_dir
+            self._is_local = False
+            
+            # Verify files exist
+            files = storage.list_files(dataset_dir, pattern="**/*.parquet", recursive=True)
+            if not files:
+                raise ValueError(f"Dataset directory has no parquet files: {dataset_dir}")
+        else:
+            # Local filesystem
+            self.dataset_dir = Path(dataset_dir)
+            self._is_local = True
+            
+            if not self.dataset_dir.exists():
+                raise ValueError(f"Dataset directory does not exist: {dataset_dir}")
         
         self.stats = {
             "partitions_scanned": 0,
@@ -779,12 +994,43 @@ class ParquetCompactor:
             "end_time": None,
         }
         
+        backend_type = storage.backend_type if storage else "local"
         logger.info(
             f"[ParquetCompactor] Initialized:\n"
+            f"  Backend: {backend_type}\n"
             f"  Dataset: {dataset_dir}\n"
             f"  Target file size: {target_file_size_mb} MB\n"
             f"  Compression: {compression}"
         )
+    
+    def _get_storage_options(self) -> Optional[Dict[str, Any]]:
+        """Get storage options for Polars."""
+        if self._is_local:
+            return None
+        return self.storage.get_storage_options()
+    
+    def _write_parquet(self, df: pl.DataFrame, path: str) -> int:
+        """Write DataFrame to parquet and return file size."""
+        if self._is_local:
+            df.write_parquet(path, compression=self.compression)
+            return Path(path).stat().st_size
+        else:
+            # S3: Write to buffer then upload
+            buffer = io.BytesIO()
+            df.write_parquet(buffer, compression=self.compression)
+            size = buffer.tell()
+            buffer.seek(0)
+            self.storage.write_bytes(buffer.read(), path)
+            return size
+    
+    def _delete_files(self, files: List[str]) -> None:
+        """Delete files."""
+        if self._is_local:
+            for f in files:
+                Path(f).unlink()
+        else:
+            for f in files:
+                self.storage.delete(f)
     
     def compact(
         self,
@@ -812,8 +1058,11 @@ class ParquetCompactor:
         import math
         self.stats["start_time"] = datetime.now()
         
+        backend_type = self.storage.backend_type if self.storage else "local"
+        storage_options = self._get_storage_options()
+        
         logger.info("=" * 80)
-        logger.info("PARQUET COMPACTION OPERATION")
+        logger.info(f"PARQUET COMPACTION OPERATION [{backend_type.upper()}]")
         logger.info("=" * 80)
         logger.info(f"  Min files for compaction: {min_file_count}")
         if target_file_count:
@@ -827,57 +1076,90 @@ class ParquetCompactor:
             logger.info(f"  Sorting by: {sort_by}")
         
         # Find all leaf partitions (directories with .parquet files)
-        leaf_partitions = []
-        for item in self.dataset_dir.rglob("*.parquet"):
-            partition_dir = item.parent
-            if partition_dir not in leaf_partitions:
-                leaf_partitions.append(partition_dir)
+        if self._is_local:
+            leaf_partitions = []
+            for item in self.dataset_dir.rglob("*.parquet"):
+                partition_dir = item.parent
+                if partition_dir not in leaf_partitions:
+                    leaf_partitions.append(partition_dir)
+            
+            # Build partition info: { partition_dir: [(filepath, size), ...] }
+            partition_files = {}
+            for partition_dir in leaf_partitions:
+                files_info = []
+                for f in partition_dir.glob("*.parquet"):
+                    files_info.append((str(f), f.stat().st_size))
+                partition_files[str(partition_dir)] = files_info
+        else:
+            # S3: list all files and group by partition
+            all_files = self.storage.list_files(self.dataset_dir, pattern="**/*.parquet", recursive=True)
+            partition_files = {}
+            for f in all_files:
+                # Get partition directory (parent of file)
+                parts = f["path"].rsplit("/", 1)
+                partition_dir = parts[0] if len(parts) > 1 else self.dataset_dir
+                if partition_dir not in partition_files:
+                    partition_files[partition_dir] = []
+                partition_files[partition_dir].append((f["path"], f["size"]))
+            leaf_partitions = list(partition_files.keys())
         
         self.stats["partitions_scanned"] = len(leaf_partitions)
         logger.info(f"  Found {len(leaf_partitions)} leaf partitions")
         
         # Compact each partition
         for partition_dir in leaf_partitions:
-            files = list(partition_dir.glob("*.parquet"))
+            files_info = partition_files.get(str(partition_dir), [])
             
-            if len(files) < min_file_count:
+            if len(files_info) < min_file_count:
                 continue
             
             # Filter by file size if specified
             if max_file_size_mb:
-                files = [
-                    f for f in files 
-                    if f.stat().st_size / (1024 * 1024) <= max_file_size_mb
+                files_info = [
+                    (f, size) for f, size in files_info 
+                    if size / (1024 * 1024) <= max_file_size_mb
                 ]
             
-            if len(files) < min_file_count:
+            if len(files_info) < min_file_count:
                 continue
             
+            file_paths = [f for f, _ in files_info]
+            file_sizes = [size for _, size in files_info]
+            
             # Calculate total size
-            total_size_mb = sum(f.stat().st_size for f in files) / (1024 * 1024)
+            total_size_mb = sum(file_sizes) / (1024 * 1024)
             
             # Determine output file count
             if target_file_count is not None:
                 num_output_files = target_file_count
             else:
-                # Calculate based on target size (default 100MB)
-                # Example: 510MB / 50MB = 10.2 -> 11 files
                 num_output_files = math.ceil(total_size_mb / self.target_file_size_mb)
                 num_output_files = max(1, num_output_files)
+            
+            if self._is_local:
+                rel_partition = Path(partition_dir).relative_to(self.dataset_dir)
+            else:
+                rel_partition = partition_dir.replace(self.dataset_dir, "").lstrip("/")
 
-            logger.info(
-                f"\n  Compacting partition: {partition_dir.relative_to(self.dataset_dir)}"
-            )
-            logger.info(f"    Files: {len(files)}, Total size: {total_size_mb:.1f} MB")
+            logger.info(f"\n  Compacting partition: {rel_partition}")
+            logger.info(f"    Files: {len(file_paths)}, Total size: {total_size_mb:.1f} MB")
             logger.info(f"    Target: {num_output_files} file(s)")
             
             if dry_run:
-                logger.info(f"    DRY RUN - Would compact {len(files)} files into {num_output_files}")
+                logger.info(f"    DRY RUN - Would compact {len(file_paths)} files into {num_output_files}")
                 continue
             
             try:
                 # Read all files
-                df = pl.read_parquet(files)
+                read_kwargs = {}
+                if storage_options:
+                    read_kwargs["storage_options"] = storage_options
+                    # For S3, get full paths
+                    read_paths = [self.storage.get_full_path(f) for f in file_paths]
+                else:
+                    read_paths = file_paths
+                
+                df = pl.read_parquet(read_paths, **read_kwargs)
                 total_rows = len(df)
                 
                 # Sort if requested
@@ -894,16 +1176,17 @@ class ParquetCompactor:
                     # Single file output
                     timestamp = datetime.now().strftime("%Y%m%dT%H")
                     unique_id = str(uuid.uuid4())[:8]
-                    output_file = partition_dir / f"part_{timestamp}_{unique_id}.parquet"
                     
-                    df.write_parquet(
-                        output_file,
-                        compression=self.compression,
-                    )
+                    if self._is_local:
+                        output_file = str(Path(partition_dir) / f"part_{timestamp}_{unique_id}.parquet")
+                    else:
+                        output_file = self.storage.join_path(partition_dir, f"part_{timestamp}_{unique_id}.parquet")
+                    
+                    size = self._write_parquet(df, output_file)
                     
                     self.stats["files_after"] += 1
-                    self.stats["bytes_after"] += output_file.stat().st_size
-                    logger.info(f"    ✓ Compacted to {output_file.name}")
+                    self.stats["bytes_after"] += size
+                    logger.info(f"    ✓ Compacted to {Path(output_file).name if self._is_local else output_file.rsplit('/', 1)[-1]}")
                     
                 else:
                     # Multiple file output
@@ -913,28 +1196,28 @@ class ParquetCompactor:
                     for i, chunk_df in enumerate(df.iter_slices(rows_per_file)):
                         timestamp = datetime.now().strftime("%Y%m%dT%H")
                         unique_id = str(uuid.uuid4())[:8]
-                        output_file = partition_dir / f"part_{timestamp}_{unique_id}_{i+1}.parquet"
                         
-                        chunk_df.write_parquet(
-                            output_file,
-                            compression=self.compression,
-                        )
+                        if self._is_local:
+                            output_file = str(Path(partition_dir) / f"part_{timestamp}_{unique_id}_{i+1}.parquet")
+                        else:
+                            output_file = self.storage.join_path(partition_dir, f"part_{timestamp}_{unique_id}_{i+1}.parquet")
+                        
+                        size = self._write_parquet(chunk_df, output_file)
                         
                         self.stats["files_after"] += 1
-                        self.stats["bytes_after"] += output_file.stat().st_size
+                        self.stats["bytes_after"] += size
                     
                     logger.info(f"    ✓ Compacted to {num_output_files} files")
 
                 # Update stats
-                self.stats["files_before"] += len(files)
-                self.stats["bytes_before"] += sum(f.stat().st_size for f in files)
+                self.stats["files_before"] += len(file_paths)
+                self.stats["bytes_before"] += sum(file_sizes)
                 self.stats["partitions_compacted"] += 1
                 
                 # Delete source files
                 if delete_source_files:
-                    for f in files:
-                        f.unlink()
-                    logger.info(f"    ✓ Deleted {len(files)} source files")
+                    self._delete_files(file_paths)
+                    logger.info(f"    ✓ Deleted {len(file_paths)} source files")
                 else:
                     logger.info(f"    ✓ Kept original files")
             
