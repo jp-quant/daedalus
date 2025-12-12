@@ -127,11 +127,10 @@ def fix_file(file_path: Path, dataset_dir: Path, dry_run: bool = False) -> bool:
     """
     Fix partition mismatch in a single Parquet file.
     
-    Optimized for Raspberry Pi:
-    - Uses PyArrow compute functions (vectorized, 100x faster than row-by-row)
-    - Processes in streaming batches for memory efficiency
-    - No intermediate Polars conversion (saves 50% memory)
-    - Single-pass normalization
+    Simple approach for small files (KB to 0.5MB):
+    - Read to pandas (handles all encoding automatically)
+    - Normalize string values
+    - Write back
     """
     try:
         # Read partition info from path
@@ -140,53 +139,31 @@ def fix_file(file_path: Path, dataset_dir: Path, dry_run: bool = False) -> bool:
         if not path_partitions:
             return True  # No partitions, nothing to fix
         
-        # Read the Parquet file (PyArrow only)
-        table = pq.read_table(file_path)
+        # Simple approach: Read via pandas (handles all PyArrow quirks)
+        import pandas as pd
+        df = pd.read_parquet(file_path)
         
-        # CRITICAL: Decode ALL dictionary-encoded columns in the entire table first
-        # This prevents "incompatible types" errors when modifying columns
-        # Dictionary encoding is common in Parquet but causes schema merge issues
-        decoded_columns = []
-        for i in range(table.num_columns):
-            col = table.column(i)
-            if pa.types.is_dictionary(col.type):
-                decoded_columns.append(col.dictionary_decode())
-            else:
-                decoded_columns.append(col)
-        
-        # Reconstruct table with all columns decoded
-        table = pa.Table.from_arrays(decoded_columns, names=table.column_names)
-        
-        # Check if normalization needed and apply in-place
+        # Check if normalization needed
         modified = False
-        columns_to_update = {}
         
         for col, expected_value in path_partitions.items():
-            if col in table.column_names:
-                column = table.column(col)
-                
-                # Quick check: Get unique values before normalization
-                unique_values = set(column.to_pylist())
+            if col in df.columns:
+                # Get unique values before normalization
+                unique_values = df[col].unique().tolist()
                 
                 # Check if normalization needed
                 needs_fix = any(
-                    normalize_value(val) != val 
+                    normalize_value(str(val)) != str(val) 
                     for val in unique_values
                 )
                 
                 if needs_fix:
-                    # Apply vectorized normalization
-                    # List comprehension is faster than row-by-row operations
-                    normalized_values = [normalize_value(v) for v in column.to_pylist()]
-                    
-                    # Create new array as plain string
-                    normalized_column = pa.array(normalized_values, type=pa.string())
-                    
-                    columns_to_update[col] = normalized_column
+                    # Apply normalization - simple string replacement
+                    df[col] = df[col].astype(str).str.replace('/', '-', regex=False)
                     modified = True
                     
-                    new_unique = set(normalized_values)
-                    logger.info(f"  Normalized {col}: {sorted(unique_values)} -> {sorted(new_unique)}")
+                    new_unique = df[col].unique().tolist()
+                    logger.info(f"  Normalized {col}: {unique_values} -> {new_unique}")
         
         if not modified:
             logger.debug(f"No changes needed for {file_path.name}")
@@ -196,21 +173,16 @@ def fix_file(file_path: Path, dataset_dir: Path, dry_run: bool = False) -> bool:
             logger.info(f"[DRY RUN] Would rewrite {file_path}")
             return True
         
-        # Apply all column updates at once
-        for col_name, new_column in columns_to_update.items():
-            col_index = table.schema.get_field_index(col_name)
-            table = table.set_column(col_index, col_name, new_column)
-        
         # Write to temporary file first (atomic operation)
         temp_file = file_path.with_suffix('.parquet.tmp')
         
         try:
-            # Write with same compression as ParquetWriter
-            pq.write_table(
-                table,
+            # Write back - pandas handles everything
+            df.to_parquet(
                 temp_file,
+                engine='pyarrow',
                 compression='zstd',
-                compression_level=3,  # Balance speed vs size
+                index=False
             )
             
             # Atomic replace
