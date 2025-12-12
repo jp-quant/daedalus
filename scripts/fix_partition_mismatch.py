@@ -100,6 +100,10 @@ def check_file_needs_fix(file_path: Path, dataset_dir: Path) -> bool:
             if col in table.column_names:
                 column = table.column(col)
                 
+                # Decode dictionary-encoded columns if needed
+                if pa.types.is_dictionary(column.type):
+                    column = column.dictionary_decode()
+                
                 # Get unique values - convert to Python set for efficiency
                 unique_values = set(column.to_pylist())
                 
@@ -147,6 +151,11 @@ def fix_file(file_path: Path, dataset_dir: Path, dry_run: bool = False) -> bool:
             if col in table.column_names:
                 column = table.column(col)
                 
+                # Decode dictionary-encoded columns (common Parquet optimization)
+                # This prevents type mismatch errors when creating new arrays
+                if pa.types.is_dictionary(column.type):
+                    column = column.dictionary_decode()
+                
                 # Quick check: Get unique values before normalization
                 unique_values = set(column.to_pylist())
                 
@@ -157,12 +166,13 @@ def fix_file(file_path: Path, dataset_dir: Path, dry_run: bool = False) -> bool:
                 )
                 
                 if needs_fix:
-                    # Apply vectorized string replacement using PyArrow compute
-                    # This is 100x faster than iterating rows
-                    # Use binary_length as a workaround - do the replacement via Python
-                    # but apply it vectorized to the whole column
+                    # Apply vectorized normalization
+                    # List comprehension is faster than row-by-row operations
                     normalized_values = [normalize_value(v) for v in column.to_pylist()]
-                    normalized_column = pa.array(normalized_values, type=column.type)
+                    
+                    # Create new array with decoded type (plain string)
+                    # Don't preserve dictionary encoding - causes schema merge errors
+                    normalized_column = pa.array(normalized_values, type=pa.string())
                     
                     columns_to_update[col] = normalized_column
                     modified = True
