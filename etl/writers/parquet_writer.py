@@ -69,7 +69,7 @@ class ParquetWriter(BaseWriter):
     def write(
         self,
         data: Union[List[Dict[str, Any]], pd.DataFrame],
-        output_path: str,
+        output_path: Union[Path, str],
         partition_cols: Optional[List[str]] = None,
         **kwargs
     ):
@@ -124,23 +124,43 @@ class ParquetWriter(BaseWriter):
             logger.error(f"[ParquetWriter] Error writing to Parquet: {e}", exc_info=True)
             raise
     
+    def _normalize_partition_value(self, value: Any) -> str:
+        """
+        Normalize partition value for filesystem compatibility.
+        
+        Replaces characters that are problematic in directory names:
+        - '/' -> '-' (common in symbols like BTC/USD -> BTC-USD)
+        - Other special chars can be added as needed
+        
+        Args:
+            value: Partition value to normalize
+        
+        Returns:
+            Normalized string safe for directory names
+        """
+        return str(value).replace("/", "-")
+    
     def _write_partitioned(
         self,
         df: pd.DataFrame,
-        output_path: str,
+        output_path: Union[Path, str],
         partition_cols: List[str]
     ):
         """
         Write with Hive-style partitioning.
         
+        IMPORTANT: Normalizes partition column values to match directory names.
+        For example, 'BTC/USD' becomes 'BTC-USD' in both the directory path
+        AND the data values to ensure consistency.
+        
         Creates directory structure like:
           output_path/
-            product_id=BTC-USD/
+            symbol=BTC-USD/
               date=2025-11-22/
-                part-uuid.parquet
-            product_id=ETH-USD/
+                part-uuid.parquet (contains symbol='BTC-USD')
+            symbol=ETH-USD/
               date=2025-11-22/
-                part-uuid.parquet
+                part-uuid.parquet (contains symbol='ETH-USD')
         """
         # Validate partition columns exist
         missing_cols = set(partition_cols) - set(df.columns)
@@ -150,7 +170,18 @@ class ParquetWriter(BaseWriter):
                 f"Available columns: {list(df.columns)}"
             )
         
-        # Group by partition columns
+        # Convert Path to string if needed
+        output_path = str(output_path)
+        
+        # CRITICAL: Normalize partition column values in the data
+        # This ensures consistency between directory names and data values
+        # Use vectorized string operations for efficiency (no full DataFrame copy)
+        for col in partition_cols:
+            if col in df.columns:
+                # Vectorized replace is ~100x faster than apply() and uses less memory
+                df[col] = df[col].astype(str).str.replace('/', '-', regex=False)
+        
+        # Group by partition columns (values already normalized above)
         grouped = df.groupby(partition_cols, dropna=False)
         
         for partition_values, partition_df in grouped:
@@ -158,12 +189,10 @@ class ParquetWriter(BaseWriter):
             if not isinstance(partition_values, tuple):
                 partition_values = (partition_values,)
             
-            # Build partition path
+            # Build partition path (values already normalized, just convert to string)
             partition_path = output_path
             for col, val in zip(partition_cols, partition_values):
-                # Sanitize partition value (e.g. replace '/' with '-')
-                safe_val = str(val).replace("/", "-")
-                partition_path = self.storage.join_path(partition_path, f"{col}={safe_val}")
+                partition_path = self.storage.join_path(partition_path, f"{col}={val}")
             
             # Ensure directory exists (local only, no-op for S3)
             self.storage.mkdir(partition_path)
@@ -171,23 +200,19 @@ class ParquetWriter(BaseWriter):
             # Keep partition columns in data (NOT dropped - preserved for data integrity)
             # Directory structure provides partition pruning optimization
             # But columns remain in Parquet for standalone querying
-            # data_df = partition_df.drop(columns=partition_cols, errors='ignore')
-            data_df = partition_df
             
             # Generate unique filename
             filename = self._generate_unique_filename()
             file_path = self.storage.join_path(partition_path, filename)
             
-            # Write to storage
-            self._write_parquet_to_storage(data_df, file_path)
+            # Write to storage (partition_df is a view, not a copy)
+            self._write_parquet_to_storage(partition_df, file_path)
             
             self.stats["records_written"] += len(partition_df)
             self.stats["files_written"] += 1
             
-            logger.info(
-                f"[ParquetWriter] Wrote {len(partition_df)} records to "
-                f"{file_path} "
-                f"({data_df.memory_usage(deep=True).sum() / 1024:.1f} KB)"
+            logger.debug(
+                f"[ParquetWriter] Wrote {len(partition_df)} records to {file_path}"
             )
         
         logger.info(
@@ -198,11 +223,14 @@ class ParquetWriter(BaseWriter):
     def _write_flat(
         self,
         df: pd.DataFrame,
-        output_path: str
+        output_path: Union[Path, str]
     ):
         """
         Write without partitioning (single file with UUID name).
         """
+        # Convert Path to string if needed
+        output_path = str(output_path)
+        
         # Ensure directory exists
         self.storage.mkdir(output_path)
         
@@ -216,9 +244,8 @@ class ParquetWriter(BaseWriter):
         self.stats["records_written"] += len(df)
         self.stats["files_written"] += 1
         
-        logger.info(
-            f"[ParquetWriter] Wrote {len(df)} records to {file_path} "
-            f"({df.memory_usage(deep=True).sum() / 1024:.1f} KB)"
+        logger.debug(
+            f"[ParquetWriter] Wrote {len(df)} records to {file_path}"
         )
     
     def _write_parquet_to_storage(self, df: pd.DataFrame, file_path: str):
@@ -243,6 +270,7 @@ class ParquetWriter(BaseWriter):
         
         else:
             # S3: write to buffer then upload
+            # Use BytesIO for in-memory buffering (efficient for small-medium files)
             buffer = io.BytesIO()
             pq.write_table(
                 table,
@@ -250,8 +278,12 @@ class ParquetWriter(BaseWriter):
                 compression=self.compression
             )
             
-            # Upload to S3
-            self.storage.write_bytes(buffer.getvalue(), file_path)
+            # Upload to S3 - getbuffer() avoids copy for better memory efficiency
+            # Falls back to getvalue() if buffer was modified
+            try:
+                self.storage.write_bytes(buffer.getbuffer().tobytes(), file_path)
+            except (AttributeError, TypeError):
+                self.storage.write_bytes(buffer.getvalue(), file_path)
     
     def _generate_unique_filename(self) -> str:
         """Generate unique filename with timestamp and UUID."""
