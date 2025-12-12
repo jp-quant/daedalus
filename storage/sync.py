@@ -14,6 +14,39 @@ import time
 
 from storage.base import StorageBackend
 
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    # Fallback no-op tqdm
+    class tqdm:
+        def __init__(self, iterable=None, **kwargs):
+            self.iterable = iterable
+            self.n = 0
+            self.total = kwargs.get('total', 0)
+        
+        def __iter__(self):
+            return iter(self.iterable) if self.iterable else iter([])
+        
+        def __enter__(self):
+            return self
+        
+        def __exit__(self, *args):
+            pass
+        
+        def update(self, n=1):
+            self.n += n
+        
+        def set_description(self, desc):
+            pass
+        
+        def set_postfix(self, ordered_dict=None, refresh=True, **kwargs):
+            pass
+        
+        def close(self):
+            pass
+
 # Type checking imports for better IDE support
 if TYPE_CHECKING:
     from storage.base import S3Storage
@@ -167,16 +200,34 @@ class StorageSync:
                 'size': file_info.get('size', 0),
             })
         
-        # Execute transfers in parallel
+        # Filter out existing files if skip_existing
+        if skip_existing:
+            logger.info("[StorageSync] Checking for existing files...")
+            tasks_to_transfer = []
+            for task in tqdm(tasks, desc="Checking existing", unit="file", disable=not TQDM_AVAILABLE):
+                if not self.destination.exists(task['dst_path']):
+                    tasks_to_transfer.append(task)
+                else:
+                    stats.files_skipped += 1
+            tasks = tasks_to_transfer
+            logger.info(f"[StorageSync] {stats.files_skipped} files already exist, {len(tasks)} to transfer")
+        
+        if not tasks:
+            logger.info("[StorageSync] No files to transfer")
+            stats.duration_seconds = time.time() - start_time
+            return stats
+        
+        # Calculate total bytes to transfer
+        total_bytes = sum(task['size'] for task in tasks)
+        total_mb = total_bytes / (1024 * 1024)
+        
+        logger.info(f"[StorageSync] Transferring {len(tasks)} files ({total_mb:.2f} MB)")
+        
+        # Execute transfers in parallel with progress bar
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
             
             for task in tasks:
-                # Skip existing if requested
-                if skip_existing and self.destination.exists(task['dst_path']):
-                    stats.files_skipped += 1
-                    continue
-                
                 future = executor.submit(
                     self._transfer_file,
                     task['src_path'],
@@ -185,37 +236,56 @@ class StorageSync:
                 )
                 futures[future] = task
             
-            # Process results
-            for future in as_completed(futures):
-                task = futures[future]
-                try:
-                    result = future.result()
-                    if result['success']:
-                        stats.files_transferred += 1
-                        stats.bytes_transferred += task['size']
-                        
-                        if on_file_transferred:
-                            on_file_transferred(task['src_path'], task['dst_path'])
-                    else:
+            # Process results with progress bar
+            with tqdm(
+                total=len(tasks),
+                desc="Transferring files",
+                unit="file",
+                unit_scale=False,
+                disable=not TQDM_AVAILABLE,
+            ) as pbar:
+                transferred_bytes = 0
+                
+                for future in as_completed(futures):
+                    task = futures[future]
+                    try:
+                        result = future.result()
+                        if result['success']:
+                            stats.files_transferred += 1
+                            stats.bytes_transferred += task['size']
+                            transferred_bytes += task['size']
+                            
+                            # Update progress bar with transfer stats
+                            pbar.set_postfix({
+                                'MB': f"{transferred_bytes / (1024 * 1024):.1f}/{total_mb:.1f}",
+                                'failed': stats.files_failed
+                            })
+                            pbar.update(1)
+                            
+                            if on_file_transferred:
+                                on_file_transferred(task['src_path'], task['dst_path'])
+                        else:
+                            stats.files_failed += 1
+                            stats.errors.append({
+                                'path': task['src_path'],
+                                'error': result.get('error', 'Unknown error'),
+                            })
+                            pbar.update(1)
+                            
+                            if on_file_failed:
+                                on_file_failed(task['src_path'], Exception(result.get('error')))
+                    
+                    except Exception as e:
                         stats.files_failed += 1
                         stats.errors.append({
                             'path': task['src_path'],
-                            'error': result.get('error', 'Unknown error'),
+                            'error': str(e),
                         })
+                        logger.error(f"[StorageSync] Transfer failed for {task['src_path']}: {e}")
+                        pbar.update(1)
                         
                         if on_file_failed:
-                            on_file_failed(task['src_path'], Exception(result.get('error')))
-                
-                except Exception as e:
-                    stats.files_failed += 1
-                    stats.errors.append({
-                        'path': task['src_path'],
-                        'error': str(e),
-                    })
-                    logger.error(f"[StorageSync] Transfer failed for {task['src_path']}: {e}")
-                    
-                    if on_file_failed:
-                        on_file_failed(task['src_path'], e)
+                            on_file_failed(task['src_path'], e)
         
         stats.duration_seconds = time.time() - start_time
         
@@ -476,12 +546,23 @@ class StorageSyncJob:
         start_time = time.time()
         results = []
         
-        for path_config in self.paths:
+        # Use progress bar for paths
+        path_iterator = tqdm(
+            self.paths,
+            desc="Processing paths",
+            unit="path",
+            disable=not TQDM_AVAILABLE,
+        ) if TQDM_AVAILABLE else self.paths
+        
+        for path_config in path_iterator:
             source_path = path_config['source']
             dest_path = path_config.get('dest', source_path)
             pattern = path_config.get('pattern', self.default_pattern)
             compact = path_config.get('compact', self.default_compact)
             delete_after = path_config.get('delete_after', self.default_delete_after)
+            
+            if TQDM_AVAILABLE and hasattr(path_iterator, 'set_description'):
+                path_iterator.set_description(f"Processing {source_path[:40]}")
             
             logger.info(f"\n[StorageSyncJob] Processing: {source_path}")
             logger.info(f"  Pattern: {pattern}, Compact: {compact}, Delete: {delete_after}")
