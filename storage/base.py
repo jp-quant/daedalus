@@ -434,7 +434,8 @@ class S3Storage(StorageBackend):
             key = self._get_s3_key(path)
             self.s3_client.delete_object(Bucket=self.bucket, Key=key)
             return True
-        except Exception:
+        except Exception as e:
+            logger.info(f"Failed to delete {path}: {e}")
             return False
     
     def list_files(

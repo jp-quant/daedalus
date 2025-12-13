@@ -1,8 +1,16 @@
-# FluxForge
+# FluxForge Market Data Pipeline
 
-**A modular, high-throughput market data ingestion + ETL pipeline with size-based segment rotation**
+**Production-grade cryptocurrency market data infrastructure for quantitative trading**
 
-FluxForge is a production-grade data ingestion engine that "forges" raw market flux into structured, queryable datasets for research and live trading. Built for reliability, it runs seamlessly from Raspberry Pi to high-end servers.
+FluxForge is a comprehensive market data ingestion, processing, and feature engineering pipeline designed for **mid-frequency quantitative crypto trading** (5-second to 4-hour horizons). Built for reliability and efficiency, it runs seamlessly from Raspberry Pi to high-end servers, with hybrid local/cloud storage support.
+
+**Key Differentiators:**
+- 🎯 **Mid-frequency focus**: Optimized for seconds-to-hours trading, not HFT
+- 🧠 **60+ microstructure features**: Order Flow Imbalance, realized volatility, regime detection
+- 🔄 **Real-time feature engineering**: Streaming statistics, bar aggregates, multi-timeframe analysis
+- 🌐 **Multi-exchange**: Unified CCXT Pro interface to 100+ exchanges
+- 💾 **Hybrid storage**: Local + S3 with seamless syncing and compaction
+- ⚙️ **Config-driven**: Zero-code feature customization via YAML
 
 ---
 
@@ -32,20 +40,32 @@ pip install -r requirements.txt
 
 # 2. Configure (copy example and edit)
 cp config/config.examples.yaml config/config.yaml
-# Edit config/config.yaml with your exchange credentials
+# Edit config/config.yaml with your exchange credentials and processor_options
 
-# 3. Start ingestion (CCXT multi-exchange collection)
-python scripts/run_ingestion.py --source ccxt
+# 3. Start live ingestion (Terminal 1)
+python scripts/run_ingestion.py --sources ccxt
 
-# 4. Start continuous ETL (processes data as segments close)
+# 4. Start continuous ETL + feature engineering (Terminal 2)
 python scripts/run_etl_watcher.py --poll-interval 30
 
-# 5. Query processed data
-python scripts/query_parquet.py data/processed/ccxt/orderbook/bars
+# 5. Start local → S3 sync (Terminal 3, optional)
+python storage/sync.py upload processed/ccxt/ s3://my-bucket/processed/ccxt/
 
-# 6. Check system health
+# 6. Run compaction for older data (Terminal 4, periodic)
+python scripts/run_compaction.py --source ccxt --partition exchange=binanceus/symbol=BTC-USDT
+
+# 7. Query processed features
+python scripts/query_parquet.py data/processed/ccxt/orderbook/hf
+
+# 8. Check system health
 python scripts/check_health.py
 ```
+
+**Typical Production Setup:**
+- **Terminal 1**: `run_ingestion.py` (continuous WebSocket collection)
+- **Terminal 2**: `run_etl_watcher.py` (near-real-time feature engineering)
+- **Terminal 3**: Periodic `storage/sync.py` (local → S3 backup)
+- **Terminal 4**: Daily `run_compaction.py` (merge small files)
 
 **Data flow**: WebSocket → NDJSON segments → Partitioned Parquet files
 
@@ -642,6 +662,62 @@ WantedBy=multi-user.target
 
 ---
 
+## � Documentation
+
+### For New Developers / Agent Sessions
+
+**Start Here**: [`docs/NEW_AGENT_PROMPT.md`](docs/NEW_AGENT_PROMPT.md)
+- Quick onboarding for new Copilot agent sessions
+- Copy-paste into fresh session to get up to speed
+- 10-minute read, points to all critical files
+
+**Complete Reference**: [`docs/SYSTEM_ONBOARDING.md`](docs/SYSTEM_ONBOARDING.md)
+- Comprehensive system documentation (30-page deep dive)
+- Architecture, feature engineering, configuration flow
+- Recent enhancements, debugging guide, success criteria
+
+### Feature Engineering
+
+**Configuration Guide**: [`docs/PROCESSOR_OPTIONS.md`](docs/PROCESSOR_OPTIONS.md)
+- How to customize StateConfig parameters
+- Complete parameter reference with examples
+- Performance recommendations for different use cases
+
+**Research Prompt**: [`docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md`](docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md)
+- Deep research prompt for optimal configurations
+- Questions about horizons, bar durations, new features
+- Awaiting research results for implementation
+
+### Storage & Operations
+
+**Storage Architecture**: [`docs/UNIFIED_STORAGE_ARCHITECTURE.md`](docs/UNIFIED_STORAGE_ARCHITECTURE.md)
+- Storage backend abstraction design
+- LocalStorage vs S3Storage
+
+**Hybrid Patterns**: [`docs/HYBRID_STORAGE_GUIDE.md`](docs/HYBRID_STORAGE_GUIDE.md)
+- Local ingestion + S3 output patterns
+- Sync strategies, compaction workflows
+
+**CCXT ETL**: [`docs/CCXT_ETL_ARCHITECTURE.md`](docs/CCXT_ETL_ARCHITECTURE.md)
+- CCXT-specific pipeline design
+- Multi-channel routing
+
+**Parquet Operations**: [`docs/PARQUET_OPERATIONS.md`](docs/PARQUET_OPERATIONS.md)
+- Best practices for Parquet files
+- Compression, partitioning, schema evolution
+
+**Filename Patterns**: [`docs/FILENAME_PATTERNS.md`](docs/FILENAME_PATTERNS.md)
+- Segment naming conventions
+- Timestamp format reference
+
+### Trading Strategy
+
+**US Crypto Strategy**: [`docs/US_CRYPTO_STRATEGY.md`](docs/US_CRYPTO_STRATEGY.md)
+- Regulatory considerations for US-based trading
+- Exchange selection, liquidity analysis
+
+---
+
 ## 🔧 Development
 
 ### Running Tests
@@ -658,6 +734,9 @@ pytest --cov=ingestion --cov=etl
 
 # Run specific test file
 pytest tests/test_features.py -v
+
+# Test configuration flow
+python scripts/test_config_flow.py
 ```
 
 ### Code Style
@@ -672,6 +751,34 @@ black .
 # Lint
 ruff check .
 ```
+
+### Adding New Features
+
+1. **Static features** (from single snapshot):
+   - Edit `etl/features/snapshot.py` → `extract_orderbook_features()`
+   - Add feature calculation
+   - Return in feature dict
+
+2. **Dynamic features** (requires state):
+   - Edit `etl/features/state.py` → `SymbolState.process_snapshot()`
+   - Access previous state via `self.prev_*` variables
+   - Compute delta-based features
+
+3. **Rolling statistics**:
+   - Add tracker in `SymbolState.__init__()`:
+     ```python
+     self.my_new_stat = RollingSum(horizon) for horizon in config.horizons
+     ```
+   - Update in `process_snapshot()`:
+     ```python
+     self.my_new_stat.update(value, timestamp)
+     features[f'my_stat_{h}s'] = self.my_new_stat.sum
+     ```
+
+4. **Configuration parameters**:
+   - Add to `StateConfig` dataclass in `etl/features/state.py`
+   - Document in `docs/PROCESSOR_OPTIONS.md`
+   - Update `config/config.yaml` example
 
 ---
 

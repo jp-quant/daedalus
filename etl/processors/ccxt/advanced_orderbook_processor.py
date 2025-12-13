@@ -20,9 +20,22 @@ class CcxtAdvancedOrderbookProcessor(BaseProcessor):
     
     def __init__(self, **kwargs):
         super().__init__()
-        # Extract StateConfig parameters from kwargs
+        
+        # Handle parameter name mapping from config.yaml to StateConfig
+        # Supports both old and new parameter names for backward compatibility
+        param_mapping = {
+            'hf_sample_interval': 'hf_emit_interval',  # Old name → new name
+        }
+        
+        # Apply mapping
+        normalized_kwargs = {}
+        for key, value in kwargs.items():
+            mapped_key = param_mapping.get(key, key)
+            normalized_kwargs[mapped_key] = value
+        
+        # Extract StateConfig parameters
         state_config_params = {
-            k: v for k, v in kwargs.items() 
+            k: v for k, v in normalized_kwargs.items() 
             if k in StateConfig.__annotations__
         }
         self.config = StateConfig(**state_config_params)

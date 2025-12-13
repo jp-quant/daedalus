@@ -89,7 +89,9 @@ class CcxtSegmentPipeline:
             if channel == "orderbook":
                 # Special handling for orderbook with multi-output
                 # We also ingest 'trades' here to calculate TFI/Aggressor features
+                # Extract processor_options from config and pass to processor
                 processor_options = config.get("processor_options", {})
+                logger.debug(f"Creating CcxtAdvancedOrderbookProcessor with options: {processor_options}")
                 processor = CcxtAdvancedOrderbookProcessor(**processor_options)
                 
                 pipeline = MultiOutputETLPipeline(
@@ -116,8 +118,15 @@ class CcxtSegmentPipeline:
                 if not processor_class:
                     logger.warning(f"No processor for channel: {channel}")
                     continue
-                    
-                processor = processor_class()
+                
+                # Extract processor_options (if processor supports it)
+                processor_options = config.get("processor_options", {})
+                try:
+                    processor = processor_class(**processor_options)
+                except TypeError:
+                    # Processor doesn't accept options, use default constructor
+                    logger.debug(f"{processor_class.__name__} doesn't accept options, using defaults")
+                    processor = processor_class()
                 
                 pipeline = ETLPipeline(
                     reader=NDJSONReader(storage=self.input_storage),

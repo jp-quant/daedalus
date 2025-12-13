@@ -1,6 +1,21 @@
 """
 Snapshot feature extraction module.
-Extracts structural features from a single orderbook snapshot.
+
+Extract STATIC/STRUCTURAL features from a single orderbook snapshot without
+requiring historical state. This is Layer 1 of feature engineering.
+
+Feature Categories:
+1. Best bid/ask (L0) - Top of book prices and sizes
+2. Multi-level depth (L1 to L{max_levels-1}) - Deeper orderbook levels
+3. Mid price, spread, relative spread - Core price metrics
+4. Microprice - Volume-weighted fair value
+5. Imbalance at each level - Bid/ask size ratios
+6. Cumulative depth at price bands - Liquidity distribution (0-5bps, 5-10bps, etc.)
+7. Book depth - Number of valid levels
+
+Output: Dict with 60+ features per snapshot
+
+Called by: SymbolState.process_snapshot() in state.py for dynamic feature layering
 """
 import numpy as np
 from typing import Dict, List, Optional, Any, Union
@@ -264,21 +279,166 @@ def extract_orderbook_features(
         features['lambda_like'] = np.nan
         features['amihud_like'] = np.nan
 
-    # Slopes
-    # (price_4 - price_0) / cum_vol_5
+    # ===============================================================
+    # ADVANCED SHAPE FEATURES (Research Priority)
+    # Based on: Ghysels & Nguyen, López de Prado, Kyle & Obizhaeva
+    # ===============================================================
+    
+    # --- Order Book Slope / Elasticity ---
+    # Measures how quickly volume accumulates with price distance
+    # Steep slope = lots of liquidity near mid (resilient)
+    # Shallow slope = thin near top, liquidity far out (fragile)
+    
+    # Method 1: Simple slope (price change per unit volume for top 5 levels)
     if len(bids_arr) >= 5:
-        price_diff = bids_arr[4, 0] - bids_arr[0, 0] # Negative for bids usually
+        price_diff = bids_arr[4, 0] - bids_arr[0, 0]  # Negative for bids
         cum_vol = np.sum(bids_arr[:5, 1])
-        features['bid_slope'] = abs(price_diff) / cum_vol if cum_vol > 0 else np.nan
+        features['bid_slope_simple'] = abs(price_diff) / cum_vol if cum_vol > 0 else np.nan
     else:
-        features['bid_slope'] = np.nan
+        features['bid_slope_simple'] = np.nan
         
     if len(asks_arr) >= 5:
-        price_diff = asks_arr[4, 0] - asks_arr[0, 0] # Positive
+        price_diff = asks_arr[4, 0] - asks_arr[0, 0]  # Positive
         cum_vol = np.sum(asks_arr[:5, 1])
-        features['ask_slope'] = abs(price_diff) / cum_vol if cum_vol > 0 else np.nan
+        features['ask_slope_simple'] = abs(price_diff) / cum_vol if cum_vol > 0 else np.nan
     else:
-        features['ask_slope'] = np.nan
+        features['ask_slope_simple'] = np.nan
+    
+    # Method 2: Regression-based slope (more robust)
+    # Regress cumulative volume against price distance from mid
+    slope_levels = min(10, len(bids_arr), len(asks_arr))
+    
+    if slope_levels >= 3 and mid_price > 0:
+        # Bid side: distance is (mid - bid_price) / mid * 10000 (bps)
+        bid_distances = (mid_price - bids_arr[:slope_levels, 0]) / mid_price * 10000
+        bid_cum_vol = np.cumsum(bids_arr[:slope_levels, 1])
+        
+        # Linear regression: cum_vol = slope * distance + intercept
+        # slope tells us "volume added per bps away from mid"
+        try:
+            bid_slope_coef = np.polyfit(bid_distances, bid_cum_vol, 1)[0]
+            features['bid_slope_regression'] = bid_slope_coef
+        except:
+            features['bid_slope_regression'] = np.nan
+        
+        # Ask side
+        ask_distances = (asks_arr[:slope_levels, 0] - mid_price) / mid_price * 10000
+        ask_cum_vol = np.cumsum(asks_arr[:slope_levels, 1])
+        
+        try:
+            ask_slope_coef = np.polyfit(ask_distances, ask_cum_vol, 1)[0]
+            features['ask_slope_regression'] = ask_slope_coef
+        except:
+            features['ask_slope_regression'] = np.nan
+        
+        # Slope asymmetry: bid_slope / ask_slope
+        # > 1 means more bid support (bullish), < 1 means more ask resistance (bearish)
+        if features['ask_slope_regression'] and features['ask_slope_regression'] > 0:
+            features['slope_asymmetry'] = features['bid_slope_regression'] / features['ask_slope_regression']
+        else:
+            features['slope_asymmetry'] = np.nan
+    else:
+        features['bid_slope_regression'] = np.nan
+        features['ask_slope_regression'] = np.nan
+        features['slope_asymmetry'] = np.nan
+    
+    # --- Center of Gravity (CoG) / Volume-Weighted Mid ---
+    # The "center of mass" of the order book
+    # If CoG > mid_price, book skewed with buy orders below (upward pull)
+    # If CoG < mid_price, book skewed with sell orders above (downward pull)
+    
+    cog_levels = min(20, len(bids_arr), len(asks_arr))
+    if cog_levels >= 1 and mid_price > 0:
+        bid_prices = bids_arr[:cog_levels, 0]
+        bid_sizes = bids_arr[:cog_levels, 1]
+        ask_prices = asks_arr[:cog_levels, 0]
+        ask_sizes = asks_arr[:cog_levels, 1]
+        
+        total_vol = np.sum(bid_sizes) + np.sum(ask_sizes)
+        if total_vol > 0:
+            cog = (np.sum(bid_prices * bid_sizes) + np.sum(ask_prices * ask_sizes)) / total_vol
+            features['center_of_gravity'] = cog
+            features['cog_vs_mid'] = (cog - mid_price) / mid_price * 10000  # bps
+        else:
+            features['center_of_gravity'] = np.nan
+            features['cog_vs_mid'] = np.nan
+    else:
+        features['center_of_gravity'] = np.nan
+        features['cog_vs_mid'] = np.nan
+    
+    # --- Book Convexity / Concavity ---
+    # Measures liquidity distribution shape
+    # Convex: Most liquidity near mid (stable, mean-reverting)
+    # Concave: Liquidity scattered far from mid (fragile, momentum-prone)
+    
+    if mid_price > 0 and 5 in bands_bps and 50 in bands_bps:
+        # Compare near vs far liquidity
+        near_vol = features.get('bid_vol_band_0_5bps', 0) + features.get('ask_vol_band_0_5bps', 0)
+        
+        # Calculate total volume up to 50bps
+        total_50bps_vol = 0
+        prev_bp = 0
+        for bp in bands_bps:
+            if bp <= 50:
+                band_key = f"{prev_bp}_{bp}bps"
+                total_50bps_vol += features.get(f'bid_vol_band_{band_key}', 0)
+                total_50bps_vol += features.get(f'ask_vol_band_{band_key}', 0)
+            prev_bp = bp
+        
+        if total_50bps_vol > 0:
+            # Convexity: fraction of volume in nearest band
+            features['book_convexity'] = near_vol / total_50bps_vol
+        else:
+            features['book_convexity'] = np.nan
+    else:
+        features['book_convexity'] = np.nan
+    
+    # --- Depth Decay Rate ---
+    # How fast does volume decrease as we go deeper?
+    # Calculated as the ratio of volume at level N vs level 1
+    
+    if len(bids_arr) >= 5 and len(asks_arr) >= 5:
+        # Average decay: (size_L5 + size_L10) / (2 * size_L1)
+        bid_decay = bids_arr[4, 1] / bids_arr[0, 1] if bids_arr[0, 1] > 0 else np.nan
+        ask_decay = asks_arr[4, 1] / asks_arr[0, 1] if asks_arr[0, 1] > 0 else np.nan
+        
+        features['bid_depth_decay_5'] = bid_decay
+        features['ask_depth_decay_5'] = ask_decay
+        
+        if not np.isnan(bid_decay) and not np.isnan(ask_decay):
+            features['avg_depth_decay_5'] = (bid_decay + ask_decay) / 2
+        else:
+            features['avg_depth_decay_5'] = np.nan
+    else:
+        features['bid_depth_decay_5'] = np.nan
+        features['ask_depth_decay_5'] = np.nan
+        features['avg_depth_decay_5'] = np.nan
+    
+    # --- Total Book Pressure ---
+    # Overall directional pressure based on full book
+    # Positive = more bid volume (bullish), Negative = more ask volume (bearish)
+    
+    if has_bids and has_asks:
+        total_bid_vol = np.sum(bids_arr[:max_levels, 1])
+        total_ask_vol = np.sum(asks_arr[:max_levels, 1])
+        total_vol = total_bid_vol + total_ask_vol
+        
+        if total_vol > 0:
+            features['book_pressure'] = (total_bid_vol - total_ask_vol) / total_vol
+            features['total_bid_volume'] = total_bid_vol
+            features['total_ask_volume'] = total_ask_vol
+        else:
+            features['book_pressure'] = 0.0
+            features['total_bid_volume'] = 0.0
+            features['total_ask_volume'] = 0.0
+    else:
+        features['book_pressure'] = np.nan
+        features['total_bid_volume'] = np.nan
+        features['total_ask_volume'] = np.nan
+    
+    # --- Legacy slopes for backward compatibility ---
+    features['bid_slope'] = features.get('bid_slope_simple', np.nan)
+    features['ask_slope'] = features.get('ask_slope_simple', np.nan)
 
     # Optional: Keep raw arrays
     if keep_raw_arrays:

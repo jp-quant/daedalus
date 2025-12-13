@@ -1,6 +1,101 @@
 """
 Symbol state management and bar building.
-Orchestrates feature extraction, streaming statistics, and bar aggregation.
+
+This is the CORE of FluxForge's feature engineering system. It orchestrates:
+1. Static feature extraction (via snapshot.py)
+2. Dynamic feature computation (OFI, returns, velocity, acceleration)
+3. Rolling statistics (realized volatility, OFI sums, TFI)
+4. Bar aggregation (OHLCV + microstructure stats)
+5. High-frequency feature emission
+
+Key Components:
+
+1. StateConfig (dataclass)
+   - Configuration for feature engineering
+   - All parameters customizable via config.yaml → processor_options
+   - Controls horizons, bar durations, sampling rate, depth
+   
+2. BarBuilder (class)
+   - Accumulates data for a single time bar
+   - OHLCV + mean/min/max spread + sum OFI + realized variance
+   - Emits completed bars when duration boundary crossed
+   
+3. SymbolState (class)
+   - Maintains state for a single symbol (e.g., BTC/USDT)
+   - Tracks previous snapshot for delta computation
+   - Manages rolling statistics (Welford, RollingSum, RegimeStats)
+   - Owns BarBuilder instances for each configured duration
+   - process_snapshot() is called for each new orderbook update
+   - process_trade() is called for each trade (for TFI calculation)
+
+Data Flow:
+    Raw orderbook snapshot
+        ↓ (extract_orderbook_features)
+    Static features (60+ columns)
+        ↓ (SymbolState.process_snapshot)
+    + Dynamic features (OFI, returns, velocity, acceleration)
+    + Rolling statistics (volatility, OFI sums, TFI)
+    + Time features (hour, day, weekend)
+        ↓ (if hf_emit_interval elapsed)
+    High-frequency feature row (emitted)
+        ↓ (BarBuilder.update)
+    Bar aggregates (when duration boundary crossed)
+
+Configuration Example (config.yaml):
+    etl:
+      channels:
+        orderbook:
+          processor_options:
+            horizons: [1, 5, 30, 60]       # Rolling stat windows (seconds)
+            bar_durations: [1, 5, 30, 60]  # Bar intervals (seconds)
+            hf_emit_interval: 1.0          # HF sampling rate
+            max_levels: 10                 # Orderbook depth
+            ofi_levels: 5                  # Levels for multi-level OFI
+            bands_bps: [5, 10, 25, 50]     # Liquidity bands
+
+Output:
+    1. HF features (emitted every hf_emit_interval seconds):
+       - All static features from snapshot.py
+       - All dynamic features (OFI, returns, velocity, etc.)
+       - All rolling statistics (rv_1s, ofi_sum_5s, tfi_30s, etc.)
+       - Time features (hour, day, weekend)
+       
+    2. Bar aggregates (emitted when bar closes):
+       - timestamp, duration
+       - OHLC (of mid price)
+       - mean/min/max spread
+       - mean L1 imbalance
+       - sum OFI
+       - realized variance
+       - count (snapshots in bar)
+
+Usage:
+    from etl.features.state import SymbolState, StateConfig
+    
+    config = StateConfig(
+        horizons=[1, 5, 30, 60],
+        bar_durations=[1, 5, 30, 60],
+        hf_emit_interval=1.0,
+        max_levels=20,
+        ofi_levels=5,
+    )
+    
+    state = SymbolState(symbol="BTC/USDT", exchange="binanceus", config=config)
+    
+    # Process each orderbook snapshot
+    hf_row, completed_bars = state.process_snapshot(orderbook_snapshot)
+    
+    # Process each trade (for TFI)
+    state.process_trade(trade_message)
+
+Note: This module is stateful - SymbolState maintains history across calls.
+      One SymbolState instance per symbol is required.
+
+Key Algorithms:
+- OFI: Cont's method ("Price Impact of Order Book Events", 2010)
+- Variance: Welford's online algorithm (numerically stable)
+- Rolling stats: Time-based decay with RollingSum
+- Regime detection: RegimeStats with configurable thresholds
 """
 import math
 import logging
@@ -18,20 +113,67 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StateConfig:
-    """Configuration for SymbolState."""
+    """
+    Configuration for SymbolState feature engineering.
+    
+    Research-optimized defaults based on:
+    - Cont et al. (2014): OFI price impact
+    - Kyle & Obizhaeva (2016): Microstructure invariance
+    - López de Prado (2018): Volume clocks
+    - Zhang et al. (2019): DeepLOB deep book features
+    
+    Key insights for mid-frequency (5s to 4h):
+    - Longer horizons (5min, 15min) capture institutional flow patterns
+    - 20 levels captures "walls" and hidden liquidity
+    - Multi-level OFI with decay reduces noise by 15-70%
+    - 1s bars redundant if emitting HF at 1s; use 1min+ bars
+    """
     # Horizons for rolling stats (seconds)
-    horizons: List[int] = field(default_factory=lambda: [1, 5, 30, 60])
+    # Research: Include multi-minute windows for mid-frequency
+    # [5s micro, 15s short, 60s standard, 300s (5min) medium, 900s (15min) trend]
+    horizons: List[int] = field(default_factory=lambda: [5, 15, 60, 300, 900])
+    
     # Bar durations to build (seconds)
-    bar_durations: List[int] = field(default_factory=lambda: [1, 5, 30, 60])
+    # Research: Skip sub-minute bars (redundant with HF), focus on 1min+ for patterns
+    # [60s standard, 300s (5min), 900s (15min), 3600s (1hr) trend]
+    bar_durations: List[int] = field(default_factory=lambda: [60, 300, 900, 3600])
+    
     # High-frequency emission interval (seconds)
+    # Research: 1.0s is good balance; sub-second mostly noise for mid-frequency
     hf_emit_interval: float = 1.0
+    
     # Feature extraction settings
-    max_levels: int = 10
-    ofi_levels: int = 5
-    bands_bps: List[int] = field(default_factory=lambda: [5, 10, 25, 50])
+    # Research: 20 levels captures institutional "walls" and improves prediction
+    max_levels: int = 20
+    
+    # OFI levels with decay weighting
+    # Research: 10 levels with decay reduces forecast error by 15-70%
+    ofi_levels: int = 10
+    
+    # OFI decay alpha for exponential weighting: w_i = exp(-alpha * i)
+    # Higher alpha = more focus on L1, lower = more uniform across levels
+    ofi_decay_alpha: float = 0.5
+    
+    # Liquidity bands in basis points
+    # Research: Wider bands [5, 10, 25, 50, 100] for crypto volatility
+    bands_bps: List[int] = field(default_factory=lambda: [5, 10, 25, 50, 100])
+    
     keep_raw_arrays: bool = False
-    # Spread regime thresholds (e.g. tight if spread <= X bps)
-    tight_spread_threshold: float = 0.0001 # 1 bp
+    
+    # Spread regime detection
+    # Research: Use dynamic percentile-based thresholds
+    tight_spread_threshold: float = 0.0001  # 1 bp fallback
+    use_dynamic_spread_regime: bool = True  # Enable percentile-based regime
+    spread_regime_window: int = 300  # 5 min window for percentile calculation
+    spread_tight_percentile: float = 0.2  # Bottom 20% = tight
+    spread_wide_percentile: float = 0.8   # Top 20% = wide
+    
+    # Kyle's Lambda (price impact) settings
+    kyle_lambda_window: int = 300  # 5 min rolling window for lambda estimation
+    
+    # VPIN settings (Volume-Synchronized Probability of Informed Trading)
+    vpin_bucket_count: int = 50  # Number of volume buckets for VPIN
+    vpin_window_buckets: int = 50  # Rolling window in buckets
 
 class BarBuilder:
     """
@@ -168,6 +310,11 @@ class SymbolState:
             h: RollingSum(h) for h in config.horizons
         }
         
+        # NEW: Rolling MLOFI (Multi-Level OFI with decay)
+        self.rolling_mlofi: Dict[int, RollingSum] = {
+            h: RollingSum(h) for h in config.horizons
+        }
+        
         # Trade Flow Imbalance (TFI)
         self.rolling_buy_vol: Dict[int, RollingSum] = {
             h: RollingSum(h) for h in config.horizons
@@ -176,11 +323,27 @@ class SymbolState:
             h: RollingSum(h) for h in config.horizons
         }
         
-        # Spread Regime Stats (e.g. 30s horizon)
-        self.spread_regime = RegimeStats(30)
+        # Spread Regime Stats
+        # Use configurable window instead of hardcoded 30s
+        self.spread_regime = RegimeStats(config.spread_regime_window)
         
-        # Example: Rolling depth variance for 0-5bps band (using 30s horizon as default)
-        self.rolling_depth_var = RollingWelford(30) 
+        # NEW: Dynamic spread regime tracking (percentile-based)
+        from .streaming import RollingPercentile
+        self.spread_percentile_tracker = RollingPercentile(config.spread_regime_window)
+        
+        # Rolling depth variance for 0-5bps band
+        self.rolling_depth_var = RollingWelford(config.spread_regime_window)
+        
+        # NEW: Kyle's Lambda estimator (price impact)
+        from .streaming import KyleLambdaEstimator
+        self.kyle_lambda = KyleLambdaEstimator(config.kyle_lambda_window)
+        
+        # NEW: Book slope tracking for trend detection
+        self.rolling_bid_slope = RollingWelford(60)  # 1-minute rolling slope stats
+        self.rolling_ask_slope = RollingWelford(60)
+        
+        # NEW: Center of gravity momentum
+        self.rolling_cog_momentum = RollingWelford(60)
 
         # Bar Builders
         self.bar_builders = [BarBuilder(d) for d in config.bar_durations]
@@ -249,6 +412,7 @@ class SymbolState:
         log_ret = 0.0
         ofi = 0.0
         ofi_multi = 0.0
+        mlofi_decay = 0.0  # NEW: MLOFI with exponential decay weighting
         
         # Reconstruct current top levels for Multi-level OFI
         current_bids = []
@@ -286,15 +450,16 @@ class SymbolState:
                 
             ofi = ofi_bid - ofi_ask # Standard: e_t = e_b_t - e_a_t
             
-            # Multi-level OFI
+            # Multi-level OFI with DECAY WEIGHTING (Research Enhancement)
+            # Reference: Xu et al. (2019) "Multi-Level Order-Flow Imbalance"
+            # MLOFI = Σ w_i * OFI_i where w_i = exp(-alpha * i)
             if self.prev_bids and self.prev_asks:
                 ofi_multi_bid = 0.0
                 ofi_multi_ask = 0.0
+                mlofi_bid_decay = 0.0
+                mlofi_ask_decay = 0.0
                 
-                # Sum OFI across levels
-                # Note: This assumes levels correspond by index, which is a simplification.
-                # A strict implementation matches by price, but for "aggregate impact" 
-                # summing the per-level OFI contribution is a common proxy.
+                alpha = self.config.ofi_decay_alpha
                 
                 # Bids
                 for i in range(min(len(current_bids), len(self.prev_bids))):
@@ -302,38 +467,36 @@ class SymbolState:
                     prev_p, prev_s = self.prev_bids[i]
                     
                     if curr_p > prev_p:
-                        ofi_multi_bid += curr_s
+                        level_ofi = curr_s
                     elif curr_p < prev_p:
-                        ofi_multi_bid += -prev_s
+                        level_ofi = -prev_s
                     else:
-                        ofi_multi_bid += curr_s - prev_s
+                        level_ofi = curr_s - prev_s
+                    
+                    # Uniform weight for ofi_multi
+                    ofi_multi_bid += level_ofi
+                    # Decay weight for mlofi_decay
+                    weight = math.exp(-alpha * i)
+                    mlofi_bid_decay += level_ofi * weight
                         
                 # Asks
                 for i in range(min(len(current_asks), len(self.prev_asks))):
                     curr_p, curr_s = current_asks[i]
                     prev_p, prev_s = self.prev_asks[i]
                     
-                    if curr_p > prev_p: # Higher ask price = retreat = positive for price? No.
-                        # Higher ask price means liquidity moved away (up).
-                        # OFI sign convention: 
-                        # Increase in bid size -> +OFI (Bullish)
-                        # Increase in ask size -> -OFI (Bearish)
-                        # Ask price moves UP -> Bullish (OFI > 0)?
-                        # Let's stick to Cont's definition per level:
-                        # e_k,t = I(p_k,t > p_k,t-1) * q_k,t 
-                        #       + I(p_k,t = p_k,t-1) * (q_k,t - q_k,t-1)
-                        #       + I(p_k,t < p_k,t-1) * (-q_k,t-1)
-                        # For Asks, we subtract this term.
-                        
-                        ofi_level = -prev_s # Price moved up (away)
+                    if curr_p > prev_p:
+                        level_ofi = -prev_s  # Price moved up (away)
                     elif curr_p < prev_p:
-                        ofi_level = curr_s # Price moved down (closer)
+                        level_ofi = curr_s   # Price moved down (closer)
                     else:
-                        ofi_level = curr_s - prev_s
+                        level_ofi = curr_s - prev_s
                         
-                    ofi_multi_ask += ofi_level
+                    ofi_multi_ask += level_ofi
+                    weight = math.exp(-alpha * i)
+                    mlofi_ask_decay += level_ofi * weight
 
                 ofi_multi = ofi_multi_bid - ofi_multi_ask
+                mlofi_decay = mlofi_bid_decay - mlofi_ask_decay
 
         # 3. Acceleration & Velocity
         self.mid_history.append((ts_sec, mid))
@@ -363,6 +526,9 @@ class SymbolState:
         features['mid_velocity'] = mid_velocity
         features['mid_accel'] = mid_accel
         features['ofi_multi'] = ofi_multi
+        
+        # NEW: MLOFI with decay weighting (Research Priority Feature)
+        features['mlofi_decay'] = mlofi_decay
 
         # 4. Update Rolling Stats & TFI
         for h, tracker in self.rolling_returns.items():
@@ -372,6 +538,11 @@ class SymbolState:
         for h, tracker in self.rolling_ofi.items():
             tracker.update(ofi, ts_sec)
             features[f'ofi_sum_{h}s'] = tracker.sum
+        
+        # NEW: Rolling MLOFI with decay
+        for h, tracker in self.rolling_mlofi.items():
+            tracker.update(mlofi_decay, ts_sec)
+            features[f'mlofi_sum_{h}s'] = tracker.sum
             
         # TFI Features
         for h in self.config.horizons:
@@ -409,19 +580,73 @@ class SymbolState:
         self.rolling_depth_var.update(depth_0_5, ts_sec)
         features['depth_0_5bps_sigma'] = self.rolling_depth_var.std
         
-        # Update Spread Regime
+        # ===============================================================
+        # NEW RESEARCH FEATURES (Dynamic / State-based)
+        # ===============================================================
+        
+        # --- Dynamic Spread Regime (Percentile-based) ---
         rel_spread = features.get('relative_spread', 0)
-        regime = "tight" if rel_spread <= self.config.tight_spread_threshold else "wide"
+        if not math.isnan(rel_spread):
+            self.spread_percentile_tracker.update(rel_spread, ts_sec)
+        
+        if self.config.use_dynamic_spread_regime:
+            # Use percentile-based regime detection
+            spread_pctile = self.spread_percentile_tracker.get_current_percentile(rel_spread)
+            features['spread_percentile'] = spread_pctile
+            
+            if spread_pctile <= self.config.spread_tight_percentile:
+                regime = "tight"
+            elif spread_pctile >= self.config.spread_wide_percentile:
+                regime = "wide"
+            else:
+                regime = "normal"
+            features['spread_regime'] = regime
+        else:
+            # Fallback to static threshold
+            regime = "tight" if rel_spread <= self.config.tight_spread_threshold else "wide"
+            features['spread_percentile'] = np.nan
+            features['spread_regime'] = regime
+        
         self.spread_regime.update(regime, ts_sec)
         features['spread_regime_tight_frac'] = self.spread_regime.get_regime_fraction("tight")
-
-        # Microprice drift
+        features['spread_regime_wide_frac'] = self.spread_regime.get_regime_fraction("wide")
+        
+        # --- Kyle's Lambda (Price Impact Coefficient) ---
+        # Update estimator with return and signed flow
+        signed_flow = ofi  # Use OFI as proxy for signed order flow
+        self.kyle_lambda.update(ts_sec, log_ret, signed_flow)
+        features['kyle_lambda'] = self.kyle_lambda.lambda_estimate
+        features['kyle_lambda_r2'] = self.kyle_lambda.r_squared
+        
+        # --- Book Slope Rolling Stats ---
+        bid_slope = features.get('bid_slope_regression', np.nan)
+        ask_slope = features.get('ask_slope_regression', np.nan)
+        
+        if not math.isnan(bid_slope):
+            self.rolling_bid_slope.update(bid_slope, ts_sec)
+        if not math.isnan(ask_slope):
+            self.rolling_ask_slope.update(ask_slope, ts_sec)
+        
+        features['bid_slope_mean_60s'] = self.rolling_bid_slope.mean
+        features['bid_slope_std_60s'] = self.rolling_bid_slope.std
+        features['ask_slope_mean_60s'] = self.rolling_ask_slope.mean
+        features['ask_slope_std_60s'] = self.rolling_ask_slope.std
+        
+        # --- Center of Gravity Momentum ---
+        cog_vs_mid = features.get('cog_vs_mid', np.nan)
+        if not math.isnan(cog_vs_mid):
+            self.rolling_cog_momentum.update(cog_vs_mid, ts_sec)
+        
+        features['cog_momentum_mean_60s'] = self.rolling_cog_momentum.mean
+        features['cog_momentum_std_60s'] = self.rolling_cog_momentum.std
+        
+        # --- Microprice drift (already calculated) ---
         if mid > 0:
             features['micro_minus_mid'] = microprice - mid
         else:
             features['micro_minus_mid'] = np.nan
 
-        # 4. Update State
+        # 5. Update State
         self.prev_mid = mid
         self.prev_best_bid = best_bid
         self.prev_best_ask = best_ask
@@ -431,7 +656,7 @@ class SymbolState:
         self.prev_asks = current_asks
         self.last_snapshot_time = ts_sec
 
-        # 5. Bar Building
+        # 6. Bar Building
         completed_bars = []
         for builder in self.bar_builders:
             bar = builder.update(
@@ -447,15 +672,18 @@ class SymbolState:
                 bar['symbol'] = self.symbol
                 bar['exchange'] = self.exchange
                 bar['date'] = features.get('date')
+                # Add MLOFI to bars as well
+                bar['sum_mlofi_decay'] = mlofi_decay
                 completed_bars.append(bar)
 
-        # 6. HF Emission Check
+        # 7. HF Emission Check
         hf_row = None
         if ts_sec - self.last_emit_time >= self.config.hf_emit_interval:
             hf_row = features
             # Add derived rolling features to the emitted row
             hf_row['log_return_step'] = log_ret
             hf_row['ofi_step'] = ofi
+            hf_row['mlofi_step'] = mlofi_decay
             self.last_emit_time = ts_sec
 
         return hf_row, completed_bars
