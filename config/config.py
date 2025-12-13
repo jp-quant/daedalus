@@ -156,6 +156,11 @@ class StorageConfig(BaseModel):
 
 class IngestionConfig(BaseModel):
     """Ingestion layer configuration."""
+    # Raw landing format: "ndjson" (legacy) or "parquet" (recommended)
+    raw_format: Literal["ndjson", "parquet"] = Field(
+        default="ndjson",
+        description="Raw data landing format. 'parquet' is 5-10x smaller with ZSTD compression."
+    )
     batch_size: int = 100
     flush_interval_seconds: float = 5.0
     queue_maxsize: int = 10000
@@ -164,6 +169,9 @@ class IngestionConfig(BaseModel):
     max_reconnect_attempts: int = 10
     reconnect_delay: float = 5.0
     segment_max_mb: int = 100  # Max size in MB before rotating segment
+    # Parquet-specific options
+    parquet_compression: str = Field(default="zstd", description="Parquet compression codec")
+    parquet_compression_level: int = Field(default=3, description="Compression level (1-22 for zstd)")
 
 
 class ChannelETLConfig(BaseModel):

@@ -5,18 +5,22 @@ Manages multiple data collectors and coordinates data writing across sources.
 """
 import asyncio
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from config import FluxForgeConfig
 from storage.base import StorageBackend
 from storage.factory import create_ingestion_storage, get_ingestion_path
 from ingestion.writers.log_writer import LogWriter
+from ingestion.writers.parquet_writer import StreamingParquetWriter
 from ingestion.collectors.coinbase_ws import CoinbaseCollector
 from ingestion.collectors.ccxt_collector import CcxtCollector
 # from ingestion.collectors.databento_ws import DatabentoCollector
 # from ingestion.collectors.ibkr_ws import IBKRCollector
 
 logger = logging.getLogger(__name__)
+
+# Type alias for any writer
+Writer = Union[LogWriter, StreamingParquetWriter]
 
 
 class IngestionPipeline:
@@ -53,12 +57,46 @@ class IngestionPipeline:
         # Initialize storage backend for ingestion
         self.storage = create_ingestion_storage(config)
         logger.info(f"Ingestion storage backend: {self.storage.backend_type}")
+        logger.info(f"Raw format: {config.ingestion.raw_format}")
         
-        # Collectors and writers
-        self.writers: Dict[str, LogWriter] = {}
+        # Collectors and writers (writer type depends on raw_format config)
+        self.writers: Dict[str, Writer] = {}
         self.collectors: List = []
         
         self._shutdown_event = asyncio.Event()
+    
+    def _create_writer(self, source_name: str, active_path: str, ready_path: str) -> Writer:
+        """
+        Create the appropriate writer based on config.ingestion.raw_format.
+        
+        Returns:
+            LogWriter for 'ndjson' format, StreamingParquetWriter for 'parquet' format.
+        """
+        if self.config.ingestion.raw_format == "parquet":
+            return StreamingParquetWriter(
+                storage=self.storage,
+                active_path=active_path,
+                ready_path=ready_path,
+                source_name=source_name,
+                batch_size=self.config.ingestion.batch_size,
+                flush_interval_seconds=self.config.ingestion.flush_interval_seconds,
+                queue_maxsize=self.config.ingestion.queue_maxsize,
+                segment_max_mb=self.config.ingestion.segment_max_mb,
+                compression=self.config.ingestion.parquet_compression,
+                compression_level=self.config.ingestion.parquet_compression_level,
+            )
+        else:
+            return LogWriter(
+                storage=self.storage,
+                active_path=active_path,
+                ready_path=ready_path,
+                source_name=source_name,
+                batch_size=self.config.ingestion.batch_size,
+                flush_interval_seconds=self.config.ingestion.flush_interval_seconds,
+                queue_maxsize=self.config.ingestion.queue_maxsize,
+                enable_fsync=self.config.ingestion.enable_fsync,
+                segment_max_mb=self.config.ingestion.segment_max_mb,
+            )
     
     async def start(self):
         """Start all configured collectors."""
@@ -104,18 +142,8 @@ class IngestionPipeline:
         active_path = get_ingestion_path(self.config, "coinbase", state="active")
         ready_path = get_ingestion_path(self.config, "coinbase", state="ready")
         
-        # Create log writer
-        coinbase_writer = LogWriter(
-            storage=self.storage,
-            active_path=active_path,
-            ready_path=ready_path,
-            source_name="coinbase",
-            batch_size=self.config.ingestion.batch_size,
-            flush_interval_seconds=self.config.ingestion.flush_interval_seconds,
-            queue_maxsize=self.config.ingestion.queue_maxsize,
-            enable_fsync=self.config.ingestion.enable_fsync,
-            segment_max_mb=self.config.ingestion.segment_max_mb,
-        )
+        # Create writer (type depends on config)
+        coinbase_writer = self._create_writer("coinbase", active_path, ready_path)
         await coinbase_writer.start()
         self.writers["coinbase"] = coinbase_writer
         
@@ -135,7 +163,7 @@ class IngestionPipeline:
         await coinbase_collector.start()
         self.collectors.append(coinbase_collector)
         
-        logger.info(f"✓ Coinbase collector started")
+        logger.info(f"✓ Coinbase collector started ({self.config.ingestion.raw_format} format)")
         logger.info(f"  Active: {active_path}")
         logger.info(f"  Ready:  {ready_path}")
     
@@ -143,26 +171,17 @@ class IngestionPipeline:
         """Start CCXT collectors for all configured exchanges."""
         logger.info("Initializing CCXT collectors...")
         
-        # Create a single unified LogWriter for all CCXT exchanges
+        # Create a single unified writer for all CCXT exchanges
         source_name = "ccxt"
         active_path = get_ingestion_path(self.config, source_name, state="active")
         ready_path = get_ingestion_path(self.config, source_name, state="ready")
         
-        ccxt_writer = LogWriter(
-            storage=self.storage,
-            active_path=active_path,
-            ready_path=ready_path,
-            source_name=source_name,
-            batch_size=self.config.ingestion.batch_size,
-            flush_interval_seconds=self.config.ingestion.flush_interval_seconds,
-            queue_maxsize=self.config.ingestion.queue_maxsize,
-            enable_fsync=self.config.ingestion.enable_fsync,
-            segment_max_mb=self.config.ingestion.segment_max_mb,
-        )
+        # Create writer (type depends on config)
+        ccxt_writer = self._create_writer(source_name, active_path, ready_path)
         await ccxt_writer.start()
         self.writers[source_name] = ccxt_writer
         
-        logger.info(f"✓ CCXT unified writer started")
+        logger.info(f"✓ CCXT unified writer started ({self.config.ingestion.raw_format} format)")
         logger.info(f"  Active: {active_path}")
         logger.info(f"  Ready:  {ready_path}")
 
