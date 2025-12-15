@@ -60,28 +60,46 @@ from storage.sync import StorageSync, StorageSyncJob
 logger = logging.getLogger(__name__)
 
 
-def get_default_sync_paths(source: Optional[str] = None) -> list:
+def get_default_sync_paths(source: Optional[str] = None, include_raw: bool = False) -> list:
     """
     Get default paths to sync based on source.
     
     Args:
         source: Optional source filter (ccxt, coinbase, etc.)
+        include_raw: Include raw data paths (default: False, only processed)
     
     Returns:
         List of path configurations
     """
-    all_paths = [
-        # CCXT paths
-        {"source": "processed/ccxt/ticker/", "compact": True, "data_source": "ccxt"},
-        {"source": "processed/ccxt/trades/", "compact": True, "data_source": "ccxt"},
-        {"source": "processed/ccxt/orderbook/hf/", "compact": True, "data_source": "ccxt"},
-        {"source": "processed/ccxt/orderbook/bars/", "compact": True, "data_source": "ccxt"},
+    all_paths = []
+    
+    # Raw data paths (Bronze layer - already compressed and sized correctly)
+    if include_raw:
+        all_paths.extend([
+            # CCXT raw paths - NO compaction (already rotated at optimal size)
+            {"source": "raw/ready/ccxt/ticker/", "compact": False, "data_source": "ccxt", "layer": "raw"},
+            {"source": "raw/ready/ccxt/trades/", "compact": False, "data_source": "ccxt", "layer": "raw"},
+            {"source": "raw/ready/ccxt/orderbook/", "compact": False, "data_source": "ccxt", "layer": "raw"},
+            
+            # Coinbase raw paths
+            {"source": "raw/ready/coinbase/ticker/", "compact": False, "data_source": "coinbase", "layer": "raw"},
+            {"source": "raw/ready/coinbase/market_trades/", "compact": False, "data_source": "coinbase", "layer": "raw"},
+            {"source": "raw/ready/coinbase/level2/", "compact": False, "data_source": "coinbase", "layer": "raw"},
+        ])
+    
+    # Processed data paths (Gold layer - may benefit from compaction)
+    all_paths.extend([
+        # CCXT processed paths
+        {"source": "processed/ccxt/ticker/", "compact": True, "data_source": "ccxt", "layer": "processed"},
+        {"source": "processed/ccxt/trades/", "compact": True, "data_source": "ccxt", "layer": "processed"},
+        {"source": "processed/ccxt/orderbook/hf/", "compact": True, "data_source": "ccxt", "layer": "processed"},
+        {"source": "processed/ccxt/orderbook/bars/", "compact": True, "data_source": "ccxt", "layer": "processed"},
         
-        # Coinbase paths
-        {"source": "processed/coinbase/ticker/", "compact": True, "data_source": "coinbase"},
-        {"source": "processed/coinbase/market_trades/", "compact": True, "data_source": "coinbase"},
-        {"source": "processed/coinbase/level2/", "compact": True, "data_source": "coinbase"},
-    ]
+        # Coinbase processed paths
+        {"source": "processed/coinbase/ticker/", "compact": True, "data_source": "coinbase", "layer": "processed"},
+        {"source": "processed/coinbase/market_trades/", "compact": True, "data_source": "coinbase", "layer": "processed"},
+        {"source": "processed/coinbase/level2/", "compact": True, "data_source": "coinbase", "layer": "processed"},
+    ])
     
     if source:
         return [p for p in all_paths if p.get("data_source") == source]
@@ -188,6 +206,11 @@ async def main():
         nargs="+",
         help="Custom paths to sync (overrides defaults)"
     )
+    parser.add_argument(
+        "--include-raw",
+        action="store_true",
+        help="Include raw data paths (Bronze layer) in sync"
+    )
     
     args = parser.parse_args()
     
@@ -257,9 +280,13 @@ async def main():
         sync_paths = [{"source": p, "compact": compact, "delete_after": delete_after} for p in sync_config.paths]
     else:
         # Use default paths
-        sync_paths = get_default_sync_paths(args.source)
+        sync_paths = get_default_sync_paths(args.source, include_raw=args.include_raw)
         for p in sync_paths:
-            p["compact"] = compact
+            # Override compact setting if specified, otherwise use path default
+            if args.no_compact:
+                p["compact"] = False
+            elif "compact" not in p:
+                p["compact"] = compact
             p["delete_after"] = delete_after
     
     logger.info(f"Paths to sync: {len(sync_paths)}")
