@@ -99,8 +99,6 @@ FluxForge follows a **strict three-layer architecture** that separates concerns 
 **Supported Sources**:
 - **CCXT** (Primary): Unified interface to 100+ exchanges (Binance, Coinbase, OKX, etc.)
 - Coinbase Advanced Trade (Native WebSocket)
-- Databento (Placeholder for equities)
-- IBKR (Placeholder for futures)
 
 **Key files**: `ingestion/collectors/`
 

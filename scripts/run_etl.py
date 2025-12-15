@@ -38,9 +38,9 @@ def main():
     parser.add_argument(
         "--source",
         type=str,
-        default="coinbase",
-        choices=["coinbase", "databento", "ibkr", "ccxt"],
-        help="Data source to process (default: coinbase)"
+        default="ccxt",
+        choices=["coinbase", "ccxt"],
+        help="Data source to process (default: ccxt)"
     )
     parser.add_argument(
         "--mode",

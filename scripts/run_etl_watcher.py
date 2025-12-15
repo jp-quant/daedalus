@@ -120,10 +120,6 @@ class ContinuousETLWatcher:
                 processing_path=processing_path,
                 channel_config=channel_config,
             )
-        
-        # Add more sources as needed
-        # if self.config.databento:
-        #     self.jobs["databento"] = ETLJob(...)
     
     async def run(self):
         """Main watcher loop."""

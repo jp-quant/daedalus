@@ -14,8 +14,6 @@ from ingestion.writers.log_writer import LogWriter
 from ingestion.writers.parquet_writer import StreamingParquetWriter
 from ingestion.collectors.coinbase_ws import CoinbaseCollector
 from ingestion.collectors.ccxt_collector import CcxtCollector
-# from ingestion.collectors.databento_ws import DatabentoCollector
-# from ingestion.collectors.ibkr_ws import IBKRCollector
 
 logger = logging.getLogger(__name__)
 
@@ -120,14 +118,6 @@ class IngestionPipeline:
         if should_run("ccxt") and self.config.ccxt and self.config.ccxt.exchanges:
             await self._start_ccxt()
         
-        # Start Databento if configured (placeholder)
-        # if should_run("databento") and self.config.databento and self.config.databento.api_key:
-        #     await self._start_databento()
-        
-        # Start IBKR if configured (placeholder)
-        # if self.config.ibkr and self.config.ibkr.account_id:
-        #     await self._start_ibkr()
-        
         logger.info("=" * 80)
         logger.info(f"Ingestion pipeline running with {len(self.collectors)} collector(s)")
         logger.info(f"Storage: {self.storage.backend_type} @ {self.storage.base_path}")
@@ -211,16 +201,6 @@ class IngestionPipeline:
             except Exception as e:
                 logger.error(f"Failed to start CCXT collector for {exchange_id}: {e}")
 
-    async def _start_databento(self):
-        """Start Databento collector and writer (placeholder)."""
-        logger.info("Databento collector not yet implemented")
-        pass
-    
-    async def _start_ibkr(self):
-        """Start IBKR collector and writer (placeholder)."""
-        logger.info("IBKR collector not yet implemented")
-        pass
-    
     async def wait_for_shutdown(self):
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()

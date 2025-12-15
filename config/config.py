@@ -16,21 +16,6 @@ class CoinbaseConfig(BaseModel):
     level2_batch_size: int = Field(default=10, description="Max products per level2 subscription (Coinbase limit)")
 
 
-class DatabentoConfig(BaseModel):
-    """Databento API configuration."""
-    api_key: str = ""
-    dataset: str = "XNAS.ITCH"
-    symbols: list[str] = Field(default_factory=list)
-    schema: str = "trades"
-
-
-class IBKRConfig(BaseModel):
-    """Interactive Brokers configuration."""
-    gateway_url: str = "https://localhost:5000"
-    account_id: str = ""
-    contracts: list[dict] = Field(default_factory=list)
-
-
 class CcxtExchangeConfig(BaseModel):
     """Configuration for a single CCXT exchange."""
     api_key: str = ""
@@ -208,8 +193,6 @@ class FluxForgeConfig(BaseModel):
     """Root configuration for FluxForge."""
     # Data sources
     coinbase: Optional[CoinbaseConfig] = None
-    databento: Optional[DatabentoConfig] = None
-    ibkr: Optional[IBKRConfig] = None
     ccxt: Optional[CcxtConfig] = None
     
     # Storage backend
@@ -283,16 +266,6 @@ def save_example_config(output_path: str = "./config/config.example.yaml"):
             "api_secret": "-----BEGIN EC PRIVATE KEY-----\\n...\\n-----END EC PRIVATE KEY-----\\n",
             "product_ids": ["BTC-USD", "ETH-USD"],
             "channels": ["ticker", "level2", "market_trades"],
-        },
-        "databento": {
-            "api_key": "your-databento-api-key",
-            "dataset": "XNAS.ITCH",
-            "symbols": ["AAPL", "MSFT"],
-            "schema": "trades",
-        },
-        "ibkr": {
-            "gateway_url": "https://localhost:5000",
-            "account_id": "your-account-id",
         },
         "ingestion": {
             "output_dir": "./data/raw",

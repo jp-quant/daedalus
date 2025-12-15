@@ -14,7 +14,6 @@ class Level2Processor(BaseProcessor):
     Process Coinbase level2 orderbook data.
     
     Coinbase-specific implementation for processing level2 messages.
-    Other exchanges (databento, ibkr) would have their own level2 processors.
     
     Capabilities:
     - Basic validation and normalization

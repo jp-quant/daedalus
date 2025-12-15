@@ -34,7 +34,7 @@ Build a **production-grade market data infrastructure** for **mid-frequency quan
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Layer 1: WebSocket Collectors (ingestion/)                          │
 │ ├─ Pure async I/O, zero CPU-intensive processing                   │
-│ ├─ CCXT Pro (primary), Coinbase Advanced, Databento, IBKR          │
+│ ├─ CCXT Pro (primary), Coinbase Advanced Trade (native)            │
 │ ├─ Push to bounded asyncio queue (backpressure handling)           │
 │ └─ Automatic reconnection with exponential backoff                  │
 └─────────────────────────────────────────────────────────────────────┘
@@ -89,8 +89,6 @@ Partitioned Parquet Files
 - `base_collector.py` - Abstract base for all collectors
 - `ccxt_collector.py` - **PRIMARY**: CCXT Pro unified interface (100+ exchanges)
 - `coinbase_ws.py` - Native Coinbase Advanced Trade WebSocket
-- `databento_ws.py` - Placeholder for equities (not implemented)
-- `ibkr_ws.py` - Placeholder for futures (not implemented)
 
 **writers/**
 - `log_writer.py` - **CRITICAL**: Size-based segment rotation with atomic moves

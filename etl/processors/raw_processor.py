@@ -15,7 +15,7 @@ class RawProcessor(BaseProcessor):
     
     This processor acts as a bridge between ingestion and ETL:
     - Takes raw records from NDJSON reader
-    - Routes to source-specific parser (Coinbase, Databento, etc.)
+    - Routes to source-specific parser (Coinbase, CCXT)
     - Returns normalized records ready for channel-specific processing
     """
     
@@ -24,7 +24,7 @@ class RawProcessor(BaseProcessor):
         Initialize raw processor.
         
         Args:
-            source: Data source (coinbase, databento, ibkr)
+            source: Data source (coinbase, ccxt)
             channel: Optional channel filter (single string or list of strings)
         """
         super().__init__()

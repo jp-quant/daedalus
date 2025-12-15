@@ -307,26 +307,6 @@ ccxt:
         watchOrderBook: ['BTC/USDC', 'ETH/USDC', 'XRP/USDC', 'SOL/USDC', 'ZEC/USDC', 'LINK/USDC', 'DOGE/USDC', 'ADA/USDC', 'SUI/USDC', 'FARTCOIN/USDC', 'PENGU/USDC', 'AAVE/USDC', 'HBAR/USDC', 'MON/USDC', 'AVAX/USDC', 'TAO/USDC', 'BCH/USDC', 'LTC/USDC', 'XLM/USDC', 'PEPE/USDC', 'ICP/USDC', 'BONK/USDC', 'UNI/USDC', 'ONDO/USDC', 'ZEN/USDC']
 
 # =============================================================================
-# DATABENTO API (for equities/ETFs/options)
-# =============================================================================
-databento:
-  api_key: ""
-  dataset: "XNAS.ITCH"
-  symbols:
-    - "AAPL"
-    - "MSFT"
-    - "TSLA"
-  schema: "trades"
-
-# =============================================================================
-# INTERACTIVE BROKERS
-# =============================================================================
-ibkr:
-  gateway_url: "https://localhost:5000"
-  account_id: "your-account-id"
-  contracts: []
-
-# =============================================================================
 # INGESTION LAYER SETTINGS
 # =============================================================================
 # Controls how data is collected from WebSocket APIs

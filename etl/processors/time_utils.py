@@ -17,7 +17,7 @@ except ImportError:
 # because:
 # 1. datetime.fromisoformat() is FAST (C-optimized, ~10x faster than dateutil.parser)
 # 2. No external dependencies (dateutil is heavy, pandas overkill for just parsing)
-# 3. ISO8601 is the standard for financial data (Coinbase, DataBento, IBKR all use it)
+# 3. ISO8601 is the standard for financial data (all major exchanges use it)
 # 4. We handle edge cases manually (nanoseconds, Z vs +00:00) for specific needs
 #
 # For truly arbitrary formats (rare in production financial data), consider:

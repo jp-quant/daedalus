@@ -26,7 +26,7 @@ from config import load_config
 
 
 def migrate_schema(
-    source: str = "coinbase",
+    source: str = "ccxt",
     channels: list[str] = None,
     action: str = "delete",  # delete, archive, or dry-run
     reprocess: bool = False
@@ -35,7 +35,7 @@ def migrate_schema(
     Migrate processed data to new schema.
     
     Args:
-        source: Data source (coinbase, databento, etc.)
+        source: Data source (coinbase, ccxt)
         channels: List of channels to migrate (None = all)
         action: What to do with old files (delete, archive, dry-run)
         reprocess: Whether to reprocess from raw data after migration
