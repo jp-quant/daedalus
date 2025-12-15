@@ -1,6 +1,6 @@
 # Documentation Index & Quick Reference
 
-**Last Updated**: December 12, 2025
+**Last Updated**: December 15, 2025
 
 This document provides a map of all documentation and quick access to key information.
 
@@ -19,7 +19,7 @@ This document provides a map of all documentation and quick access to key inform
 
 **COMPLETE REFERENCE**: [`SYSTEM_ONBOARDING.md`](SYSTEM_ONBOARDING.md)
 - 30-page comprehensive system documentation
-- Architecture, algorithms, workflows, debugging
+- Medallion architecture, algorithms, workflows, debugging
 - Everything you need to master FluxForge
 
 ---

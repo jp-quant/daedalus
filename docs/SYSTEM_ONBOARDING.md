@@ -28,7 +28,7 @@ Build a **production-grade market data infrastructure** for **mid-frequency quan
 
 ## 🏗️ System Architecture
 
-### Three-Layer Design Principle
+### Medallion Architecture (Bronze → Silver → Gold)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -40,41 +40,44 @@ Build a **production-grade market data infrastructure** for **mid-frequency quan
 └─────────────────────────────────────────────────────────────────────┘
               ↓ (asyncio queue)
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Layer 2: Batched Log Writer (ingestion/writers/)                    │
-│ ├─ Size-based segment rotation (default: 100 MB)                   │
-│ ├─ NDJSON format (newline-delimited JSON)                          │
+│ Layer 2: StreamingParquetWriter (ingestion/writers/)                │
+│ ├─ BRONZE LAYER: Raw data landing in Parquet format               │
+│ ├─ 5-10x smaller than NDJSON with ZSTD compression                │
+│ ├─ Channel-separated files (ticker/, trades/, orderbook/)          │
+│ ├─ Size-based segment rotation (default: 50 MB)                   │
 │ ├─ active/ → ready/ atomic moves                                   │
-│ ├─ fsync for durability guarantees                                 │
-│ └─ Unified storage backend (local filesystem or S3)                │
+│ ├─ Schema-aware: typed columns, nested structs for orderbook      │
+│ └─ Preserves ALL raw data for replay/reprocessing                 │
 └─────────────────────────────────────────────────────────────────────┘
-              ↓ (file system)
+              ↓ (file system / S3)
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Layer 3: Offline ETL Workers (etl/)                                 │
-│ ├─ Reads ready/ segments (never touches active/)                   │
+│ Layer 3: ETL Workers (etl/) - SILVER/GOLD LAYERS                   │
+│ ├─ Reads ready/ segments (Parquet or NDJSON based on config)      │
 │ ├─ Atomic moves to processing/ (prevents double-processing)        │
-│ ├─ Composable pipeline: Reader → Processor → Writer                │
 │ ├─ Feature engineering: 60+ microstructure features                │
 │ ├─ Multi-output: High-frequency features + bar aggregates          │
 │ └─ Hive-partitioned Parquet: exchange=X/symbol=Y/date=Z/           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**Why preserve raw data?** We keep Bronze layer (raw Parquet) to iterate on feature engineering and model development without re-collecting data from exchanges.
+
 ### Data Flow
 
 ```
 Exchange WebSocket
-    ↓ (CCXT Pro)
+    ↓ (CCXT Pro / Coinbase native)
 Raw Market Data (tick-by-tick)
-    ↓ (Collector adds timestamp)
+    ↓ (Collector adds capture_ts)
 asyncio.Queue (bounded, backpressure)
-    ↓ (LogWriter batches)
-NDJSON Segments (100MB chunks)
-    ├─ active/segment_20251212T14_00042.ndjson  (currently writing)
-    └─ ready/segment_20251212T14_00041.ndjson   (ready for ETL)
+    ↓ (StreamingParquetWriter batches)
+Bronze: Raw Parquet Segments (50MB, ZSTD compressed)
+    ├─ raw/active/ccxt/ticker/segment_*.parquet     (writing)
+    ├─ raw/active/ccxt/trades/segment_*.parquet     (writing)
+    ├─ raw/active/ccxt/orderbook/segment_*.parquet  (writing)
+    └─ raw/ready/ccxt/{channel}/segment_*.parquet   (ready for ETL)
     ↓ (ETL Job picks up)
-processing/segment_20251212T14_00041.ndjson  (atomic move)
-    ↓ (Pipeline processes)
-Partitioned Parquet Files
+Silver/Gold: Feature-Engineered Parquet
     ├─ processed/ccxt/orderbook/hf/exchange=binanceus/symbol=BTC-USDT/date=2025-12-12/*.parquet
     └─ processed/ccxt/orderbook/bars/exchange=binanceus/symbol=BTC-USDT/date=2025-12-12/*.parquet
 ```
@@ -83,7 +86,7 @@ Partitioned Parquet Files
 
 ## 📂 Critical Code Locations
 
-### Ingestion Layer (`ingestion/`)
+### Ingestion Layer (`ingestion/`) - BRONZE
 
 **collectors/**
 - `base_collector.py` - Abstract base for all collectors
@@ -91,16 +94,17 @@ Partitioned Parquet Files
 - `coinbase_ws.py` - Native Coinbase Advanced Trade WebSocket
 
 **writers/**
-- `log_writer.py` - **CRITICAL**: Size-based segment rotation with atomic moves
+- `parquet_writer.py` - **CRITICAL**: StreamingParquetWriter for raw Parquet landing (Bronze)
+- `log_writer.py` - Legacy NDJSON writer (still supported via `raw_format` config)
 
 **orchestrators/**
-- `ingestion_pipeline.py` - Coordinates collectors + writer, manages shutdown
+- `ingestion_pipeline.py` - Coordinates collectors + writer, selects writer based on `raw_format`
 
 **utils/**
 - `serialization.py` - JSON encoding for market data types
 - `time.py` - Timestamp utilities
 
-### ETL Layer (`etl/`)
+### ETL Layer (`etl/`) - SILVER/GOLD
 
 **orchestrators/**
 - `pipeline.py` - Base ETL pipeline (Reader → Processor → Writer)

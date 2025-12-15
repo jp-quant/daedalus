@@ -1,300 +1,395 @@
 # COPILOT AGENT ONBOARDING PROMPT
 
-**Copy and paste this entire prompt into a new Copilot agent session to get it up to speed.**
+**Copy and paste this entire prompt into a new Copilot agent session to get it up to speed on the FluxForge codebase.**
 
 ---
 
-## Your Mission
+## Project Overview
 
-You are joining the **FluxForge** project - a production-grade market data infrastructure for **mid-frequency quantitative cryptocurrency trading** (5-second to 4-hour holding periods). Your role is to help implement advanced orderbook features and optimize the system based on quantitative research.
+You are joining **FluxForge** - a production-grade market data infrastructure for **mid-frequency quantitative cryptocurrency trading** (5-second to 4-hour holding periods).
 
-## Critical Context
+### Mission
+Build a competitive edge through **information processing**, not speed. We cannot compete with institutional HFT infrastructure. Our alpha comes from:
+- Advanced microstructure features (60+ from orderbook data)
+- Multi-timeframe analysis (1s to 60s bars + rolling statistics)
+- Statistical patterns that persist over longer horizons
+- **Preserving raw data for iterative feature engineering and modeling**
 
-### What We're Building
-A complete pipeline: WebSocket collection → Feature engineering → ML-ready datasets
+### Trading Context
+| Parameter | Value |
+|-----------|-------|
+| Asset Class | Cryptocurrency (BTC, ETH, SOL, etc.) |
+| Exchanges | Binance US, Coinbase Advanced, OKX, 100+ via CCXT |
+| Holding Period | 5 seconds to 4 hours |
+| Infrastructure | Retail/prosumer (Raspberry Pi to cloud) |
+| Latency | 50-500ms (not co-located) |
+| Target Sharpe | > 2, Max Drawdown < 20% |
 
-**Key Insight**: We cannot compete with HFT. Our edge is **information processing**, not speed.
-- Target: Mid-frequency signals (5s to 4h)
-- Focus: Advanced microstructure features (60+ from orderbooks)
-- Edge: Statistical patterns, regime detection, multi-timeframe analysis
+---
 
-### System Architecture (3 Layers)
+## System Architecture
+
+### Medallion Architecture (Bronze → Silver → Gold)
 
 ```
-Layer 1: WebSocket Collectors (ingestion/)
-  → Pure async I/O, CCXT Pro (100+ exchanges)
-  → Push to bounded queue
-
-Layer 2: Batched Log Writer (ingestion/writers/)
-  → Size-based rotation (100MB NDJSON segments)
-  → active/ → ready/ atomic moves
-  
-Layer 3: ETL + Feature Engineering (etl/)
-  → Processes ready/ segments
-  → 60+ microstructure features
-  → Hive-partitioned Parquet output
+┌─────────────────────────────────────────────────────────────────────┐
+│ Layer 1: WebSocket Collectors (ingestion/)                          │
+│ ├─ Pure async I/O, zero CPU-intensive processing                   │
+│ ├─ CCXT Pro (100+ exchanges), Coinbase Advanced (native)           │
+│ ├─ Push to bounded asyncio queue (backpressure handling)           │
+│ └─ Automatic reconnection with exponential backoff                  │
+└─────────────────────────────────────────────────────────────────────┘
+              ↓ (asyncio queue)
+┌─────────────────────────────────────────────────────────────────────┐
+│ Layer 2: StreamingParquetWriter (ingestion/writers/)                │
+│ ├─ BRONZE LAYER: Raw data landing in Parquet format               │
+│ ├─ 5-10x smaller than NDJSON with ZSTD compression                │
+│ ├─ Channel-separated files (ticker/, trades/, orderbook/)          │
+│ ├─ Size-based segment rotation (default: 50 MB)                   │
+│ ├─ active/ → ready/ atomic moves                                   │
+│ └─ Schema-aware: typed columns, nested structs for orderbook      │
+└─────────────────────────────────────────────────────────────────────┘
+              ↓ (file system / S3)
+┌─────────────────────────────────────────────────────────────────────┐
+│ Layer 3: ETL Workers (etl/) - SILVER/GOLD LAYERS                   │
+│ ├─ Reads ready/ segments (Parquet or NDJSON based on config)      │
+│ ├─ Atomic moves to processing/ (prevents double-processing)        │
+│ ├─ Feature engineering: 60+ microstructure features                │
+│ ├─ Multi-output: High-frequency snapshots + bar aggregates         │
+│ └─ Hive-partitioned Parquet output                                 │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Live Operation (4 concurrent terminals)
+### Why Raw Parquet (Bronze Layer)?
 
-1. **Terminal 1**: `python scripts/run_ingestion.py --sources ccxt` (24/7 WebSocket collection)
-2. **Terminal 2**: `python scripts/run_etl_watcher.py --poll-interval 30` (Real-time feature engineering)
-3. **Terminal 3**: `python storage/sync.py upload ...` (Periodic cloud backup)
-4. **Terminal 4**: `python scripts/run_compaction.py ...` (Daily file merge)
+The ingestion layer now writes **raw data directly to Parquet** instead of NDJSON:
 
-### Current Feature Set
+1. **5-10x smaller** with ZSTD compression
+2. **Columnar format** - can read just needed columns for feature iteration
+3. **Typed schema** - no JSON parsing overhead
+4. **Preserves all raw data** - enables iterative feature engineering
+5. **Same durability guarantees** - fsync, atomic moves, immediate S3 upload
 
-**Static/Structural** (from `etl/features/snapshot.py`):
-- Best bid/ask, multi-level depth (L0 to L{max_levels})
-- Mid price, spread, relative spread (bps)
-- Microprice (volume-weighted fair value)
+**Key insight**: We keep raw data (Bronze) to iterate on features and models without re-collecting from exchanges.
+
+### Data Flow
+
+```
+Exchange WebSocket
+    ↓ (CCXT Pro / Coinbase native)
+Raw Market Data (tick-by-tick)
+    ↓ (Collector adds capture_ts)
+asyncio.Queue (bounded, backpressure)
+    ↓ (StreamingParquetWriter batches)
+Bronze Layer: Raw Parquet Segments (50MB chunks)
+    ├─ raw/active/ccxt/ticker/segment_*.parquet     (writing)
+    ├─ raw/active/ccxt/trades/segment_*.parquet     (writing)
+    ├─ raw/active/ccxt/orderbook/segment_*.parquet  (writing)
+    └─ raw/ready/ccxt/{channel}/segment_*.parquet   (ready for ETL)
+    ↓ (ETL Job picks up)
+Silver/Gold Layer: Feature-Engineered Parquet
+    ├─ processed/ccxt/orderbook/hf/exchange=X/symbol=Y/date=Z/*.parquet
+    └─ processed/ccxt/orderbook/bars/exchange=X/symbol=Y/date=Z/*.parquet
+```
+
+### Raw Parquet Schemas
+
+**Ticker** (`ingestion/writers/parquet_writer.py`):
+```
+collected_at (int64), capture_ts (timestamp), exchange, symbol,
+bid, ask, bid_volume, ask_volume, last, open, high, low, close,
+vwap, base_volume, quote_volume, change, percentage, timestamp,
+info_json (string)
+```
+
+**Trades**:
+```
+collected_at, capture_ts, exchange, symbol, trade_id, timestamp,
+side, price, amount, cost, info_json
+```
+
+**Orderbook**:
+```
+collected_at, capture_ts, exchange, symbol, timestamp, nonce,
+bids (list<struct<price, size>>), asks (list<struct<price, size>>)
+```
+
+---
+
+## Critical Code Map
+
+### Ingestion Layer (BRONZE)
+
+| File | Purpose |
+|------|---------|
+| `ingestion/writers/parquet_writer.py` | **StreamingParquetWriter** - Raw Parquet landing |
+| `ingestion/writers/log_writer.py` | Legacy NDJSON writer (still supported) |
+| `ingestion/collectors/ccxt_collector.py` | CCXT Pro unified WebSocket (100+ exchanges) |
+| `ingestion/collectors/coinbase_ws.py` | Native Coinbase Advanced Trade WebSocket |
+| `ingestion/orchestrators/ingestion_pipeline.py` | Coordinates collectors + writer |
+
+**Config**: `config.ingestion.raw_format = "parquet"` (recommended) or `"ndjson"` (legacy)
+
+### Feature Engineering (SILVER/GOLD)
+
+| File | Purpose |
+|------|---------|
+| `etl/features/snapshot.py` | 60+ static features from single orderbook snapshot |
+| `etl/features/state.py` | `StateConfig` + `SymbolState` (stateful processing, rolling stats) |
+| `etl/features/streaming.py` | Online algorithms (Welford variance, RollingSum, RegimeStats) |
+
+**Start Here**: Read `etl/features/state.py` docstring for comprehensive overview.
+
+### Processors
+
+| File | Purpose |
+|------|---------|
+| `etl/processors/ccxt/advanced_orderbook_processor.py` | Main orderbook feature engine |
+| `etl/processors/ccxt/ticker_processor.py` | Ticker data enrichment |
+| `etl/processors/ccxt/trades_processor.py` | Trade data enrichment |
+
+### Orchestration
+
+| File | Purpose |
+|------|---------|
+| `etl/orchestrators/ccxt_segment_pipeline.py` | **CRITICAL**: Multi-channel routing |
+| `etl/orchestrators/pipeline.py` | Base ETL pipeline (Reader → Processor → Writer) |
+| `etl/orchestrators/multi_output_pipeline.py` | Splits output (HF + bars) |
+| `etl/job.py` | ETL job runner - processes segments |
+
+### Configuration
+
+| File | Purpose |
+|------|---------|
+| `config/config.py` | Pydantic configuration models |
+| `config/config.yaml` | Runtime configuration (NOT in git - contains API keys) |
+| `config/config.examples.yaml` | Template for config.yaml |
+
+### Storage
+
+| File | Purpose |
+|------|---------|
+| `storage/base.py` | Unified storage abstraction (LocalStorage, S3Storage) |
+| `storage/factory.py` | Storage backend factory |
+| `storage/sync.py` | Bidirectional sync (local ↔ S3) |
+
+---
+
+## Configuration
+
+### Ingestion Config (`config.yaml`)
+
+```yaml
+ingestion:
+  raw_format: "parquet"           # "parquet" (recommended) or "ndjson" (legacy)
+  batch_size: 1000                # Records per batch write
+  flush_interval_seconds: 5.0     # Force flush every N seconds
+  queue_maxsize: 50000            # Max records in memory queue
+  segment_max_mb: 50              # Rotate segment after N MB
+  parquet_compression: "zstd"     # Compression codec
+  parquet_compression_level: 3    # 1-22 for zstd
+```
+
+### ETL Channel Config (`config.yaml`)
+
+```yaml
+etl:
+  channels:
+    orderbook:
+      enabled: true
+      partition_cols: ["exchange", "symbol", "date"]
+      processor_options:
+        max_levels: 10           # Orderbook depth levels
+        ofi_levels: 5            # Levels for multi-level OFI
+        horizons: [1, 5, 30, 60] # Rolling window sizes (seconds)
+        bar_durations: [1, 5, 30, 60]  # Bar aggregation intervals
+        hf_emit_interval: 1.0    # HF snapshot rate (seconds)
+        bands_bps: [5, 10, 25, 50]     # Liquidity bands (basis points)
+```
+
+### Configuration Flow
+
+```
+config.yaml
+    ↓
+IngestionConfig.raw_format → StreamingParquetWriter or LogWriter
+    ↓
+etl.channels.orderbook.processor_options
+    ↓
+ETLJob → CcxtSegmentPipeline → CcxtAdvancedOrderbookProcessor
+    ↓
+StateConfig (dataclass) → SymbolState (per-symbol processing)
+```
+
+---
+
+## Feature Set Summary
+
+### Static Features (per snapshot)
+- Best bid/ask (L0), multi-level depth (L1 to L{max_levels})
+- Mid price, spread, relative spread (bps), microprice
 - Imbalance at each level
 - Cumulative depth at price bands (0-5bps, 5-10bps, 10-25bps, 25-50bps)
 
-**Dynamic/Flow** (from `etl/features/state.py`):
-- Order Flow Imbalance (OFI) - Cont's method
-- Multi-level OFI
+### Dynamic Features (delta-based)
+- Order Flow Imbalance (OFI) - Cont's method (L1 + multi-level)
 - Log returns, velocity, acceleration
 - Trade Flow Imbalance (TFI)
 
-**Rolling Statistics**:
-- Realized volatility (Welford's algorithm) - [1s, 5s, 30s, 60s]
-- Rolling OFI sums
-- Rolling TFI
+### Rolling Statistics (Welford's algorithm)
+- Realized volatility over horizons [1s, 5s, 30s, 60s]
+- Rolling OFI sums, rolling TFI
 - Spread regime fraction (tight/wide)
 - Depth variance
 
-**Bar Aggregates**:
-- OHLCV + microstructure stats - [1s, 5s, 30s, 60s]
-- Mean/min/max spread
-- Sum OFI, mean imbalance
-- Realized variance within bar
-
-### Configuration (StateConfig)
-
-**Location**: `etl/features/state.py` → `StateConfig` dataclass
-
-**Configurable in** `config/config.yaml` → `etl.channels.orderbook.processor_options`:
-
-```python
-horizons: [1, 5, 30, 60]          # Rolling window sizes (seconds)
-bar_durations: [1, 5, 30, 60]     # Bar aggregation intervals
-hf_emit_interval: 1.0             # HF snapshot rate
-max_levels: 10                    # Orderbook depth
-ofi_levels: 5                     # Levels for multi-level OFI
-bands_bps: [5, 10, 25, 50]        # Liquidity bands (basis points)
-keep_raw_arrays: false
-tight_spread_threshold: 0.0001    # 1 bp
-```
-
-**Config Flow**:
-```
-config.yaml 
-  → ETLConfig.channels["orderbook"].processor_options
-  → ETLJob(channel_config)
-  → CcxtSegmentPipeline
-  → CcxtAdvancedOrderbookProcessor(**processor_options)
-  → StateConfig
-  → SymbolState (feature engineering)
-```
-
-## Critical Files to Understand
-
-### Feature Engineering (MOST IMPORTANT)
-- `etl/features/state.py` - **StateConfig** + **SymbolState** (stateful per-symbol processing)
-- `etl/features/snapshot.py` - Static feature extraction (60+ features)
-- `etl/features/streaming.py` - Rolling statistics (Welford, RegimeStats)
-
-### Processors
-- `etl/processors/ccxt/advanced_orderbook_processor.py` - Main orderbook processor
-- `etl/orchestrators/ccxt_segment_pipeline.py` - Multi-channel routing
-
-### Storage & Sync
-- `storage/base.py` - Unified storage abstraction (LocalStorage, S3Storage)
-- `storage/sync.py` - Bidirectional sync (local ↔ S3)
-
-### Configuration
-- `config/config.py` - Pydantic models
-- `config/config.yaml` - Runtime configuration (NOT committed, has API keys)
-
-### Scripts
-- `scripts/run_ingestion.py` - WebSocket collection
-- `scripts/run_etl_watcher.py` - Continuous ETL
-- `scripts/run_compaction.py` - File compaction
-- `scripts/test_config_flow.py` - Verify processor_options flow
-
-## Recent Enhancements (Dec 2025)
-
-1. **Processor Options Configuration**
-   - Added `processor_options` to channel config
-   - Updated pipeline to pass options to processors
-   - Test script: `scripts/test_config_flow.py`
-   - Documented: `docs/PROCESSOR_OPTIONS.md`
-
-2. **S3 Connection Pooling**
-   - Added `max_pool_connections` to S3Config (default: 50)
-   - Prevents boto3 bottleneck with ThreadPoolExecutor
-
-3. **Partition Fix Utility**
-   - Created `scripts/fix_partition_mismatch.py`
-   - Fixes symbol format issues (BTC/USD → BTC-USD)
-   - Works with local + S3
-
-4. **Research Prompt**
-   - Created `docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md`
-   - Awaiting research results on optimal configs and new features
-
-## Documentation to Read
-
-**CRITICAL (Read First)**:
-1. `docs/SYSTEM_ONBOARDING.md` - **COMPLETE SYSTEM REFERENCE** (this is your bible)
-2. `docs/PROCESSOR_OPTIONS.md` - Feature engineering configuration guide
-3. `docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md` - Research questions awaiting answers
-
-**Secondary**:
-4. `docs/UNIFIED_STORAGE_ARCHITECTURE.md` - Storage design
-5. `docs/HYBRID_STORAGE_GUIDE.md` - Local + S3 patterns
-6. `docs/CCXT_ETL_ARCHITECTURE.md` - CCXT-specific design
-
-## Your Immediate Tasks
-
-### Phase 1: Deep Dive (First 30 minutes)
-
-1. **Read the complete onboarding doc**:
-   ```
-   Read: docs/SYSTEM_ONBOARDING.md (comprehensive system reference)
-   ```
-
-2. **Understand feature engineering**:
-   ```
-   Read: etl/features/state.py (StateConfig + SymbolState)
-   Read: etl/features/snapshot.py (static features)
-   Read: etl/features/streaming.py (rolling algorithms)
-   ```
-
-3. **Trace configuration flow**:
-   ```
-   Read: config/config.yaml → etl.channels.orderbook.processor_options
-   Read: etl/orchestrators/ccxt_segment_pipeline.py → _create_pipelines()
-   Read: etl/processors/ccxt/advanced_orderbook_processor.py → __init__()
-   ```
-
-4. **Review recent changes**:
-   ```
-   Read: docs/PROCESSOR_OPTIONS.md
-   Read: scripts/test_config_flow.py
-   Read: scripts/fix_partition_mismatch.py
-   ```
-
-### Phase 2: Verify Understanding
-
-Run the test script to confirm config flow works:
-```bash
-python scripts/test_config_flow.py
-```
-
-Expected output:
-```
-✓ max_levels: 20
-✓ ofi_levels: 5
-✓ hf_emit_interval: 1.0
-✓ bar_durations: [5, 15, 60]
-...
-Configuration flow test PASSED ✓
-```
-
-### Phase 3: Ready for Research Results
-
-Once you understand the system, you'll receive research results from a deep research agent on:
-1. Optimal StateConfig defaults (horizons, bar_durations, max_levels, etc.)
-2. New features to implement (prioritized by effort vs alpha)
-3. Model architectures for orderbook data
-4. Preprocessing recommendations
-
-Your job will be to:
-1. Update StateConfig defaults based on research
-2. Implement new features (book slope, Kyle's lambda, VPIN, etc.)
-3. Add new rolling statistics
-4. Optimize performance
-
-## Key Concepts to Master
-
-### 1. Order Flow Imbalance (OFI)
-**Paper**: Cont, Stoikov, Talreja (2010)
-**Purpose**: Measure buying/selling pressure from orderbook changes
-**Implementation**: `etl/features/state.py` → L1 and multi-level versions
-
-### 2. Microprice
-**Formula**: `(bid_size * ask + ask_size * bid) / (bid_size + ask_size)`
-**Purpose**: More accurate than mid price, accounts for imbalance
-**Implementation**: `etl/features/snapshot.py`
-
-### 3. Welford's Algorithm
-**Purpose**: Online variance computation (numerically stable)
-**Implementation**: `etl/features/streaming.py` → `RollingWelford`
-
-### 4. Hive Partitioning
-**Format**: `exchange=X/symbol=Y/date=Z/`
-**Purpose**: Predicate pushdown in distributed queries
-**Implementation**: `etl/writers/parquet_writer.py`
-
-## Debugging Checklist
-
-If something doesn't work:
-
-1. **Features missing?** → Run `python scripts/test_config_flow.py`
-2. **S3 slow?** → Check `max_pool_connections` in config.yaml
-3. **High memory?** → Reduce `max_levels` or `segment_max_mb`
-4. **Partition issues?** → Run `python scripts/fix_partition_mismatch.py`
-5. **Config not applied?** → Enable DEBUG logging in config.yaml
-
-## Success Criteria
-
-You're ready when you can:
-
-1. ✅ Explain the 3-layer architecture
-2. ✅ Trace a config value from YAML → StateConfig → features
-3. ✅ Describe how OFI is calculated (Cont's method)
-4. ✅ Navigate the codebase confidently
-5. ✅ Understand the difference between HF features vs bars
-6. ✅ Know where to add a new rolling statistic
-7. ✅ Know where to add a new static feature
-
-## Final Note
-
-**This project is about building a competitive edge through better information processing, not faster execution.** Every feature we engineer should:
-- Have theoretical justification (academic papers)
-- Be computable in real-time (< 10ms per snapshot)
-- Have predictive power for mid-frequency signals
-- Be configurable (StateConfig parameters)
-
-**Now read `docs/SYSTEM_ONBOARDING.md` thoroughly and explore the codebase. You'll be implementing cutting-edge orderbook research soon!**
+### Bar Aggregates
+- OHLCV + microstructure stats at [1s, 5s, 30s, 60s]
+- Mean/min/max spread, sum OFI, mean imbalance, realized variance
 
 ---
 
-## Quick Reference Commands
+## Production Setup (4 Concurrent Terminals)
 
 ```bash
-# Verify config flow
+# Terminal 1: WebSocket Collection (24/7) - writes to Bronze layer
+python scripts/run_ingestion.py --sources ccxt
+
+# Terminal 2: Continuous ETL (real-time feature engineering)
+python scripts/run_etl_watcher.py --poll-interval 30
+
+# Terminal 3: Cloud Backup (periodic)
+python storage/sync.py upload --source-path processed/ --dest-path s3://bucket/processed/
+
+# Terminal 4: File Compaction (daily maintenance)
+python scripts/run_compaction.py --source ccxt --partition exchange=X/symbol=Y
+```
+
+---
+
+## Useful Commands
+
+```bash
+# Start ingestion (writes raw Parquet to Bronze layer)
+python scripts/run_ingestion.py --sources ccxt
+
+# Verify configuration flow works
 python scripts/test_config_flow.py
 
 # Check system health
 python scripts/check_health.py
 
-# Query features
+# Query processed features
 python scripts/query_parquet.py data/processed/ccxt/orderbook/hf
 
-# Live ingestion
-python scripts/run_ingestion.py --sources ccxt
-
-# Continuous ETL
-python scripts/run_etl_watcher.py --poll-interval 30
-
-# Sync to S3
-python storage/sync.py upload --source-path processed/ --dest-path s3://bucket/processed/
-
-# Compact files
-python scripts/run_compaction.py --source ccxt --partition exchange=X/symbol=Y
+# Manual ETL run (single segment)
+python scripts/run_etl.py --source ccxt --channel orderbook
 ```
 
-**Good luck! Start with `docs/SYSTEM_ONBOARDING.md` and work your way through the codebase.**
+---
+
+## Working with Raw Data (Bronze Layer)
+
+The raw Parquet files in `raw/ready/{source}/{channel}/` preserve all exchange data for:
+
+1. **Feature iteration** - Add new features without re-collecting data
+2. **Model retraining** - Replay historical data through updated models
+3. **Debugging** - Inspect exact exchange responses
+4. **Backtesting** - Build realistic backtests from raw tick data
+
+**Reading raw orderbook data**:
+```python
+import polars as pl
+
+# Lazy scan for memory efficiency
+lf = pl.scan_parquet("raw/ready/ccxt/orderbook/*.parquet")
+
+# Filter and collect
+df = lf.filter(
+    (pl.col("exchange") == "binanceus") &
+    (pl.col("symbol") == "BTC/USDT")
+).collect()
+
+# Access nested bids/asks
+for row in df.iter_rows(named=True):
+    bids = row["bids"]  # List of {price, size} dicts
+    asks = row["asks"]
+```
+
+---
+
+## Documentation Reference
+
+For deeper understanding, read these docs in `docs/`:
+
+| Document | Purpose | When to Read |
+|----------|---------|--------------|
+| `SYSTEM_ONBOARDING.md` | **Complete 30-page reference** | Deep dive into any topic |
+| `INDEX.md` | Navigation hub + quick reference | Bookmark for lookups |
+| `PROCESSOR_OPTIONS.md` | Feature engineering config | Customizing features |
+| `UNIFIED_STORAGE_ARCHITECTURE.md` | Storage design | Understanding storage |
+| `HYBRID_STORAGE_GUIDE.md` | Local + S3 patterns | Setting up cloud backup |
+| `CCXT_ETL_ARCHITECTURE.md` | CCXT pipeline design | Understanding ETL flow |
+
+---
+
+## Key Concepts to Know
+
+### Order Flow Imbalance (OFI)
+**Paper**: Cont, Stoikov, Talreja (2010)  
+**Purpose**: Measure buying/selling pressure from orderbook changes  
+**Location**: `etl/features/state.py`
+
+### Microprice
+**Formula**: `(bid_size × ask + ask_size × bid) / (bid_size + ask_size)`  
+**Purpose**: Volume-weighted fair value (more accurate than mid)  
+**Location**: `etl/features/snapshot.py`
+
+### Welford's Algorithm
+**Purpose**: Online variance computation (numerically stable)  
+**Location**: `etl/features/streaming.py` → `RollingWelford`
+
+### Medallion Architecture
+**Bronze**: Raw data landing (Parquet, preserves all fields)  
+**Silver**: Cleaned, normalized data  
+**Gold**: Feature-engineered, ML-ready datasets  
+**Location**: `ingestion/writers/parquet_writer.py` (Bronze), `etl/` (Silver/Gold)
+
+---
+
+## Debugging Checklist
+
+| Issue | Solution |
+|-------|----------|
+| Features missing? | Run `python scripts/test_config_flow.py` |
+| S3 slow? | Check `max_pool_connections` in config.yaml |
+| High memory? | Reduce `max_levels` or `segment_max_mb` |
+| Partition issues? | Run `python scripts/fix_partition_mismatch.py` |
+| Config not applied? | Enable DEBUG logging in config.yaml |
+| Raw data format? | Check `config.ingestion.raw_format` |
+
+---
+
+## Understanding Checklist
+
+You're ready to work on this codebase when you can:
+
+- [ ] Explain the Medallion architecture (Bronze → Silver → Gold)
+- [ ] Understand why we preserve raw data in Parquet format
+- [ ] Trace a config value from YAML → StateConfig → features
+- [ ] Describe how OFI is calculated (Cont's method)
+- [ ] Navigate to the right file for any component
+- [ ] Explain the difference between HF features vs bars
+- [ ] Know where to add a new rolling statistic
+- [ ] Know where to add a new static feature
+
+---
+
+## Next Steps
+
+After familiarizing yourself with the codebase:
+
+1. **Explore** - Read the files in the Critical Code Map section
+2. **Run** - Execute `python scripts/test_config_flow.py` to verify setup
+3. **Ask** - Tell me what you need to work on and I'll provide context
+
+**I'm ready to help with whatever task comes next.**

@@ -62,28 +62,33 @@ python scripts/check_health.py
 ```
 
 **Typical Production Setup:**
-- **Terminal 1**: `run_ingestion.py` (continuous WebSocket collection)
+- **Terminal 1**: `run_ingestion.py` (continuous WebSocket collection → Bronze Parquet)
 - **Terminal 2**: `run_etl_watcher.py` (near-real-time feature engineering)
 - **Terminal 3**: Periodic `storage/sync.py` (local → S3 backup)
 - **Terminal 4**: Daily `run_compaction.py` (merge small files)
 
-**Data flow**: WebSocket → NDJSON segments → Partitioned Parquet files
+**Data flow**: WebSocket → Raw Parquet (Bronze) → Feature-Engineered Parquet (Silver/Gold)
 
 **Output structure**:
 ```
-data/processed/ccxt/
-  ├── ticker/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
-  ├── trades/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
-  └── orderbook/
-      ├── hf/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
-      └── bars/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
+data/
+  raw/ready/ccxt/                    # Bronze Layer (raw data preserved)
+    ├── ticker/segment_*.parquet
+    ├── trades/segment_*.parquet
+    └── orderbook/segment_*.parquet
+  processed/ccxt/                    # Silver/Gold Layer (features)
+    ├── ticker/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
+    ├── trades/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
+    └── orderbook/
+        ├── hf/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
+        └── bars/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
 ```
 
 ---
 
 ## 🏗️ Architecture
 
-FluxForge follows a **strict three-layer architecture** that separates concerns and ensures reliability:
+FluxForge follows a **Medallion Architecture** (Bronze → Silver → Gold) that preserves raw data for iterative feature development:
 
 ### Layer 1: WebSocket Collectors (I/O Only)
 
@@ -102,44 +107,54 @@ FluxForge follows a **strict three-layer architecture** that separates concerns 
 
 **Key files**: `ingestion/collectors/`
 
-### Layer 2: Batched Log Writer with Segment Rotation
+### Layer 2: StreamingParquetWriter (BRONZE LAYER)
 
-**Purpose**: Durable, append-only storage with size-based file rotation
+**Purpose**: Durable raw data landing with compression and size-based rotation
 
 **Design**:
 - Pulls from asyncio queue
 - Batches records (configurable size)
-- Writes NDJSON to active segment
-- **Rotates when segment reaches size limit** (default: 100 MB)
+- Writes directly to **Parquet format** (5-10x smaller than NDJSON)
+- Channel-separated files (ticker/, trades/, orderbook/)
+- **Rotates when segment reaches size limit** (default: 50 MB)
 - Atomic move from `active/` → `ready/` directory
-- fsync for durability guarantees
+- ZSTD compression (configurable level)
+- **Preserves ALL raw data** for replay/reprocessing
 - **Unified storage backend** (works with local filesystem or S3)
 
-**Key files**: `ingestion/writers/log_writer.py`
+**Why Parquet for raw data?**
+- Preserve raw data to iterate on features without re-collecting
+- 5-10x smaller than NDJSON with ZSTD compression
+- Columnar format - can read just needed columns
+- Typed schema - no JSON parsing overhead
 
-**Segment naming**: `segment_<YYYYMMDDTHH>_<COUNTER>.ndjson`
+**Key files**: `ingestion/writers/parquet_writer.py`
+
+**Segment naming**: `segment_<YYYYMMDDTHH>_<COUNTER>.parquet`
 - Counter resets each hour (prevents overflow)
-- Example: `segment_20251209T14_00042.ndjson` = 42nd segment at 2PM
+- Example: `segment_20251209T14_00042.parquet` = 42nd segment at 2PM
 
-### Layer 3: Offline ETL Workers (CPU-Intensive)
+### Layer 3: ETL Workers (SILVER/GOLD LAYERS)
 
-**Purpose**: Transform raw NDJSON segments into structured, partitioned Parquet files
+**Purpose**: Transform raw Parquet segments into feature-engineered, partitioned files
 
 **Design**:
 - Reads from `ready/` directory (never touches `active/`)
 - Atomically moves segment to `processing/` (prevents double-processing)
 - Uses composable pipeline architecture:
   - **Readers**: NDJSONReader, ParquetReader (with Polars)
-  - **Processors**: Source-specific transforms
+  - **Processors**: Source-specific transforms + feature engineering
   - **Writers**: Flexible ParquetWriter with Hive-style partitioning
 - Routes channels to specialized processors
+- **60+ microstructure features** from orderbook data
+- **Multi-output**: High-frequency snapshots + bar aggregates
 - **Partitions by exchange, symbol, AND date** (Hive-style for distributed queries)
-- Deletes processed segment (configurable)
+- Optionally deletes processed segment (configurable)
 
 **Key files**: 
 - `etl/orchestrators/ccxt_segment_pipeline.py` - Multi-channel routing
-- `etl/processors/ccxt/` - CCXT-specific transforms
-- `etl/parsers/ccxt_parser.py` - Message extraction
+- `etl/processors/ccxt/advanced_orderbook_processor.py` - Feature engineering
+- `etl/features/` - Feature extraction modules
 - `etl/writers/parquet_writer.py` - Partitioned output
 
 ---
