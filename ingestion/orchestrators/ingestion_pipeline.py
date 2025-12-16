@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Union
 
-from config import FluxForgeConfig
+from config import DaedalusConfig
 from storage.base import StorageBackend
 from storage.factory import create_ingestion_storage, get_ingestion_path
 from ingestion.writers.log_writer import LogWriter
@@ -40,12 +40,12 @@ class IngestionPipeline:
         await pipeline.stop()
     """
     
-    def __init__(self, config: FluxForgeConfig, sources: Optional[List[str]] = None):
+    def __init__(self, config: DaedalusConfig, sources: Optional[List[str]] = None):
         """
         Initialize ingestion pipeline.
         
         Args:
-            config: FluxForge configuration
+            config: Daedalus configuration
             sources: Optional list of sources to enable (e.g. ["coinbase", "ccxt"]).
                      If None, all configured sources are enabled.
         """
@@ -99,7 +99,7 @@ class IngestionPipeline:
     async def start(self):
         """Start all configured collectors."""
         logger.info("=" * 80)
-        logger.info("FluxForge Ingestion Pipeline Starting")
+        logger.info("Daedalus Ingestion Pipeline Starting")
         if self.enabled_sources:
             logger.info(f"Enabled sources: {self.enabled_sources}")
         logger.info("=" * 80)

@@ -140,7 +140,7 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="FluxForge Storage Sync - Compact and upload to S3"
+        description="Daedalus Storage Sync - Compact and upload to S3"
     )
     parser.add_argument(
         "--config",
@@ -224,7 +224,7 @@ async def main():
     )
     
     logger.info("=" * 80)
-    logger.info("FluxForge Storage Sync")
+    logger.info("Daedalus Storage Sync")
     logger.info("=" * 80)
     
     # Check if sync is configured/enabled

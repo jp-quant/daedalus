@@ -1,8 +1,8 @@
-# FluxForge Market Data Pipeline
+# Daedalus Market Data Pipeline
 
 **Production-grade cryptocurrency market data infrastructure for quantitative trading**
 
-FluxForge is a comprehensive market data ingestion, processing, and feature engineering pipeline designed for **mid-frequency quantitative crypto trading** (5-second to 4-hour horizons). Built for reliability and efficiency, it runs seamlessly from Raspberry Pi to high-end servers, with hybrid local/cloud storage support.
+Daedalus is a comprehensive market data ingestion, processing, and feature engineering pipeline designed for **mid-frequency quantitative crypto trading** (5-second to 4-hour horizons). Built for reliability and efficiency, it runs seamlessly from Raspberry Pi to high-end servers, with hybrid local/cloud storage support.
 
 **Key Differentiators:**
 - 🎯 **Mid-frequency focus**: Optimized for seconds-to-hours trading, not HFT
@@ -88,7 +88,7 @@ data/
 
 ## 🏗️ Architecture
 
-FluxForge follows a **Medallion Architecture** (Bronze → Silver → Gold) that preserves raw data for iterative feature development:
+Daedalus follows a **Medallion Architecture** (Bronze → Silver → Gold) that preserves raw data for iterative feature development:
 
 ### Layer 1: WebSocket Collectors (I/O Only)
 
@@ -188,8 +188,8 @@ FluxForge follows a **Medallion Architecture** (Bronze → Silver → Gold) that
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/fluxforge.git
-cd fluxforge
+git clone https://github.com/yourusername/daedalus.git
+cd daedalus
 
 # Install dependencies
 pip install -r requirements.txt
@@ -364,7 +364,7 @@ df = pd.read_parquet("data/processed/ccxt/ticker/exchange=binanceus/symbol=BTC-U
 
 ## 🗄️ Storage Architecture
 
-FluxForge uses a **unified storage abstraction** that works seamlessly with both local filesystem and AWS S3.
+Daedalus uses a **unified storage abstraction** that works seamlessly with both local filesystem and AWS S3.
 
 ### Storage Backends
 
@@ -414,7 +414,7 @@ storage:
 ### Project Structure
 
 ```
-FluxForge/
+Daedalus/
 ├── ingestion/              # Layer 1 & 2: Data collection
 │   ├── collectors/         # WebSocket collectors (I/O only)
 │   │   ├── base_collector.py
@@ -515,7 +515,7 @@ data/
 
 ## 🧮 Feature Engineering
 
-FluxForge includes sophisticated orderbook feature engineering for quantitative research.
+Daedalus includes sophisticated orderbook feature engineering for quantitative research.
 
 ### Structural Features (Per Snapshot)
 
@@ -595,17 +595,17 @@ watch -n 300 python scripts/check_health.py
 
 ### Option 2: systemd Services (Linux)
 
-**Ingestion service**: `/etc/systemd/system/fluxforge-ingestion.service`
+**Ingestion service**: `/etc/systemd/system/daedalus-ingestion.service`
 
 ```ini
 [Unit]
-Description=FluxForge Ingestion Pipeline
+Description=Daedalus Ingestion Pipeline
 After=network.target
 
 [Service]
 Type=simple
 User=youruser
-WorkingDirectory=/path/to/FluxForge
+WorkingDirectory=/path/to/Daedalus
 ExecStart=/usr/bin/python3 scripts/run_ingestion.py --source ccxt
 Restart=always
 RestartSec=10
@@ -614,17 +614,17 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-**ETL service**: `/etc/systemd/system/fluxforge-etl-watcher.service`
+**ETL service**: `/etc/systemd/system/daedalus-etl-watcher.service`
 
 ```ini
 [Unit]
-Description=FluxForge ETL Watcher
+Description=Daedalus ETL Watcher
 After=network.target
 
 [Service]
 Type=simple
 User=youruser
-WorkingDirectory=/path/to/FluxForge
+WorkingDirectory=/path/to/Daedalus
 ExecStart=/usr/bin/python3 scripts/run_etl_watcher.py --poll-interval 30
 Restart=always
 RestartSec=10
@@ -801,13 +801,13 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-## 💡 Why FluxForge?
+## 💡 Why Daedalus?
 
-The name represents the core mission: forging raw market "flux" (streaming data) into structured datasets. Like a forge transforms raw metal into refined tools, FluxForge transforms raw market data streams into clean, queryable datasets ready for research and trading.
+The name represents the core mission: like Daedalus, the master craftsman of Greek mythology who built the labyrinth, this system architects a sophisticated data labyrinth—transforming chaotic market streams into structured, navigable datasets. Just as Daedalus crafted wings from feathers and wax, we forge raw market data into refined tools for quantitative research and trading.
 
 ---
 
-**Ready to forge some market data?** 🔨
+**Ready to navigate the data labyrinth?** 🏛️
 
 ```bash
 python scripts/run_ingestion.py --source ccxt

@@ -1,11 +1,11 @@
 # Parquet Operations Guide
 
-Complete guide for managing Parquet datasets in FluxForge:
+Complete guide for managing Parquet datasets in Daedalus:
 1. **Repartitioning** - Change partition schema
 2. **Compaction** - Optimize file sizes
 3. **CRUD Operations** - Delete, Update, Upsert
 
-**Important:** FluxForge stores partition columns IN the Parquet data (not just in directory names).
+**Important:** Daedalus stores partition columns IN the Parquet data (not just in directory names).
 This differs from strict Hive partitioning where columns are dropped. Our approach provides:
 - Data integrity (files are standalone queryable)
 - Directory-based partition pruning (query optimization)

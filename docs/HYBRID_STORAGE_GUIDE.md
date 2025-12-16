@@ -2,7 +2,7 @@
 
 ## Overview
 
-FluxForge uses **explicit storage configuration** where each layer (ingestion, ETL input, ETL output) can have its own storage backend. This provides maximum flexibility to optimize for performance, cost, and durability.
+Daedalus uses **explicit storage configuration** where each layer (ingestion, ETL input, ETL output) can have its own storage backend. This provides maximum flexibility to optimize for performance, cost, and durability.
 
 ## Architecture
 

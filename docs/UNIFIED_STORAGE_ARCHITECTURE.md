@@ -1,8 +1,8 @@
-# FluxForge Unified Storage Architecture
+# Daedalus Unified Storage Architecture
 
 ## Overview
 
-FluxForge now uses a unified storage abstraction that works seamlessly with both local filesystem and AWS S3. This enables flexible deployment scenarios including all-local, all-S3, or hybrid configurations.
+Daedalus now uses a unified storage abstraction that works seamlessly with both local filesystem and AWS S3. This enables flexible deployment scenarios including all-local, all-S3, or hybrid configurations.
 
 ## Key Changes
 

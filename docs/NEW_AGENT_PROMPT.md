@@ -1,12 +1,12 @@
 # COPILOT AGENT ONBOARDING PROMPT
 
-**Copy and paste this entire prompt into a new Copilot agent session to get it up to speed on the FluxForge codebase.**
+**Copy and paste this entire prompt into a new Copilot agent session to get it up to speed on the Daedalus codebase.**
 
 ---
 
 ## Project Overview
 
-You are joining **FluxForge** - a production-grade market data infrastructure for **mid-frequency quantitative cryptocurrency trading** (5-second to 4-hour holding periods).
+You are joining **Daedalus** - a production-grade market data infrastructure for **mid-frequency quantitative cryptocurrency trading** (5-second to 4-hour holding periods).
 
 ### Mission
 Build a competitive edge through **information processing**, not speed. We cannot compete with institutional HFT infrastructure. Our alpha comes from:

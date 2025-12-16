@@ -1,5 +1,5 @@
 """
-Base storage abstraction for FluxForge.
+Base storage abstraction for Daedalus.
 
 Provides unified interface for local and cloud storage backends.
 All paths are relative to the storage root (local base_dir or S3 bucket).

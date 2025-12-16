@@ -20,7 +20,7 @@ This document provides a map of all documentation and quick access to key inform
 **COMPLETE REFERENCE**: [`SYSTEM_ONBOARDING.md`](SYSTEM_ONBOARDING.md)
 - 30-page comprehensive system documentation
 - Medallion architecture, algorithms, workflows, debugging
-- Everything you need to master FluxForge
+- Everything you need to master Daedalus
 
 ---
 
@@ -397,5 +397,5 @@ S3 Bucket (cloud backup)
 ---
 
 **Last Review**: December 12, 2025  
-**Maintainer**: FluxForge Team  
+**Maintainer**: Daedalus Team  
 **Status**: Production-ready, actively maintained

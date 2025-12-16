@@ -1,7 +1,7 @@
 """
 Symbol state management and bar building.
 
-This is the CORE of FluxForge's feature engineering system. It orchestrates:
+This is the CORE of Daedalus's feature engineering system. It orchestrates:
 1. Static feature extraction (via snapshot.py)
 2. Dynamic feature computation (OFI, returns, velocity, acceleration)
 3. Rolling statistics (realized volatility, OFI sums, TFI)

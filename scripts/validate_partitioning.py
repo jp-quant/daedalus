@@ -228,7 +228,7 @@ def run_all_tests(dataset_dir: str = None):
         dataset_dir: Path to processed dataset. If None, skips data tests.
     """
     print("\n" + "="*80)
-    print("FLUXFORGE PARTITIONING VALIDATION")
+    print("DAEDALUS PARTITIONING VALIDATION")
     print("="*80)
     
     results = {}

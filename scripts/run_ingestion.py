@@ -1,4 +1,4 @@
-"""Run FluxForge ingestion pipeline."""
+"""Run Daedalus ingestion pipeline."""
 import asyncio
 import logging
 import signal
@@ -19,7 +19,7 @@ async def main():
     """Main entry point."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="FluxForge Ingestion Pipeline")
+    parser = argparse.ArgumentParser(description="Daedalus Ingestion Pipeline")
     parser.add_argument(
         "--config",
         type=str,

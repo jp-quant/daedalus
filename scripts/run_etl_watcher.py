@@ -124,7 +124,7 @@ class ContinuousETLWatcher:
     async def run(self):
         """Main watcher loop."""
         logger.info("=" * 80)
-        logger.info("FluxForge Continuous ETL Watcher Starting")
+        logger.info("Daedalus Continuous ETL Watcher Starting")
         logger.info("=" * 80)
         logger.info(f"Storage Input:  {self.storage_input.backend_type} @ {self.storage_input.base_path}")
         logger.info(f"Storage Output: {self.storage_output.backend_type} @ {self.storage_output.base_path}")
@@ -178,7 +178,7 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="FluxForge Continuous ETL Watcher"
+        description="Daedalus Continuous ETL Watcher"
     )
     parser.add_argument(
         "--config",

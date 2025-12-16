@@ -1,4 +1,4 @@
-"""Run FluxForge ETL pipeline."""
+"""Run Daedalus ETL pipeline."""
 import logging
 import sys
 from pathlib import Path
@@ -29,7 +29,7 @@ def main():
     """Main entry point."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="FluxForge ETL Pipeline")
+    parser = argparse.ArgumentParser(description="Daedalus ETL Pipeline")
     parser.add_argument(
         "--config",
         type=str,
@@ -77,7 +77,7 @@ def main():
     )
     
     logger.info("=" * 80)
-    logger.info("FluxForge ETL Pipeline Starting")
+    logger.info("Daedalus ETL Pipeline Starting")
     logger.info("=" * 80)
     logger.info(f"Source: {args.source}")
     logger.info(f"Mode: {args.mode}")

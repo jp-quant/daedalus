@@ -1,4 +1,4 @@
-"""Configuration management for FluxForge."""
+"""Configuration management for Daedalus."""
 import os
 import yaml
 from pathlib import Path
@@ -189,8 +189,8 @@ class ETLConfig(BaseModel):
     })
 
 
-class FluxForgeConfig(BaseModel):
-    """Root configuration for FluxForge."""
+class DaedalusConfig(BaseModel):
+    """Root configuration for Daedalus."""
     # Data sources
     coinbase: Optional[CoinbaseConfig] = None
     ccxt: Optional[CcxtConfig] = None
@@ -209,28 +209,28 @@ class FluxForgeConfig(BaseModel):
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 
-def load_config(config_path: Optional[str] = None) -> FluxForgeConfig:
+def load_config(config_path: Optional[str] = None) -> DaedalusConfig:
     """
     Load configuration from YAML file.
     
     Args:
         config_path: Path to config file. If None, looks for:
-            1. FLUXFORGE_CONFIG environment variable
+            1. DAEDALUS_CONFIG environment variable
             2. ./config/config.yaml
-            3. ~/.fluxforge/config.yaml
+            3. ~/.daedalus/config.yaml
     
     Returns:
-        FluxForgeConfig instance
+        DaedalusConfig instance
     """
     if config_path is None:
         # Check environment variable
-        config_path = os.environ.get("FLUXFORGE_CONFIG")
+        config_path = os.environ.get("DAEDALUS_CONFIG")
         
         if config_path is None:
             # Check default locations
             candidates = [
                 Path("./config/config.yaml"),
-                Path.home() / ".fluxforge" / "config.yaml",
+                Path.home() / ".daedalus" / "config.yaml",
             ]
             for candidate in candidates:
                 if candidate.exists():
@@ -239,7 +239,7 @@ def load_config(config_path: Optional[str] = None) -> FluxForgeConfig:
     
     if config_path is None:
         raise FileNotFoundError(
-            "No config file found. Set FLUXFORGE_CONFIG or create config/config.yaml"
+            "No config file found. Set DAEDALUS_CONFIG or create config/config.yaml"
         )
     
     config_path = Path(config_path)
@@ -250,7 +250,7 @@ def load_config(config_path: Optional[str] = None) -> FluxForgeConfig:
     with open(config_path, 'r') as f:
         yaml_data = yaml.safe_load(f)
     
-    return FluxForgeConfig(**yaml_data)
+    return DaedalusConfig(**yaml_data)
 
 
 def save_example_config(output_path: str = "./config/config.example.yaml"):

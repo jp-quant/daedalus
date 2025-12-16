@@ -8,7 +8,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from config import FluxForgeConfig
+    from config import DaedalusConfig
 
 from storage.base import StorageBackend, LocalStorage, S3Storage
 
@@ -58,12 +58,12 @@ def _create_backend_from_layer_config(
         raise ValueError(f"[{layer_name}] Unknown storage backend: {backend}")
 
 
-def create_ingestion_storage(config: "FluxForgeConfig") -> StorageBackend:
+def create_ingestion_storage(config: "DaedalusConfig") -> StorageBackend:
     """
     Create storage backend for ingestion layer.
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
     
     Returns:
         StorageBackend instance for ingestion
@@ -74,12 +74,12 @@ def create_ingestion_storage(config: "FluxForgeConfig") -> StorageBackend:
     )
 
 
-def create_etl_storage_input(config: "FluxForgeConfig") -> StorageBackend:
+def create_etl_storage_input(config: "DaedalusConfig") -> StorageBackend:
     """
     Create storage backend for ETL input (reading raw data).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
     
     Returns:
         StorageBackend instance for ETL input
@@ -90,12 +90,12 @@ def create_etl_storage_input(config: "FluxForgeConfig") -> StorageBackend:
     )
 
 
-def create_etl_storage_output(config: "FluxForgeConfig") -> StorageBackend:
+def create_etl_storage_output(config: "DaedalusConfig") -> StorageBackend:
     """
     Create storage backend for ETL output (writing processed data).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
     
     Returns:
         StorageBackend instance for ETL output
@@ -106,12 +106,12 @@ def create_etl_storage_output(config: "FluxForgeConfig") -> StorageBackend:
     )
 
 
-def create_sync_source_storage(config: "FluxForgeConfig") -> StorageBackend:
+def create_sync_source_storage(config: "DaedalusConfig") -> StorageBackend:
     """
     Create storage backend for sync job source (where to read from).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
     
     Returns:
         StorageBackend instance for sync source
@@ -122,12 +122,12 @@ def create_sync_source_storage(config: "FluxForgeConfig") -> StorageBackend:
     )
 
 
-def create_sync_destination_storage(config: "FluxForgeConfig") -> StorageBackend:
+def create_sync_destination_storage(config: "DaedalusConfig") -> StorageBackend:
     """
     Create storage backend for sync job destination (where to write to).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
     
     Returns:
         StorageBackend instance for sync destination
@@ -138,12 +138,12 @@ def create_sync_destination_storage(config: "FluxForgeConfig") -> StorageBackend
     )
 
 
-def get_ingestion_path(config: "FluxForgeConfig", source_name: str, state: str = "active") -> str:
+def get_ingestion_path(config: "DaedalusConfig", source_name: str, state: str = "active") -> str:
     """
     Get path for ingestion layer data.
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
         source_name: Data source name (e.g., "coinbase")
         state: "active" or "ready"
     
@@ -163,12 +163,12 @@ def get_ingestion_path(config: "FluxForgeConfig", source_name: str, state: str =
     return f"{paths.raw_dir}/{subdir}/{source_name}"
 
 
-def get_etl_input_path(config: "FluxForgeConfig", source_name: str) -> str:
+def get_etl_input_path(config: "DaedalusConfig", source_name: str) -> str:
     """
     Get path for ETL input (reads from ready/ directory).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
         source_name: Data source name
     
     Returns:
@@ -177,12 +177,12 @@ def get_etl_input_path(config: "FluxForgeConfig", source_name: str) -> str:
     return get_ingestion_path(config, source_name, state="ready")
 
 
-def get_etl_output_path(config: "FluxForgeConfig", source_name: str) -> str:
+def get_etl_output_path(config: "DaedalusConfig", source_name: str) -> str:
     """
     Get path for ETL output (processed data).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
         source_name: Data source name
     
     Returns:
@@ -192,12 +192,12 @@ def get_etl_output_path(config: "FluxForgeConfig", source_name: str) -> str:
     return f"{paths.processed_dir}/{source_name}"
 
 
-def get_processing_path(config: "FluxForgeConfig", source_name: str) -> str:
+def get_processing_path(config: "DaedalusConfig", source_name: str) -> str:
     """
     Get path for ETL processing (temporary in-progress directory).
     
     Args:
-        config: FluxForge configuration
+        config: Daedalus configuration
         source_name: Data source name
     
     Returns:

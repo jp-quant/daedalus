@@ -125,7 +125,7 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# FluxForge specific
+# Daedalus specific
 config/config.yaml
 config/secrets.yaml
 data/raw/

@@ -1,5 +1,5 @@
 """
-Examples of using unified storage with FluxForge.
+Examples of using unified storage with Daedalus.
 
 Demonstrates the new unified storage architecture that works
 seamlessly with both local filesystem and S3.
@@ -346,12 +346,12 @@ def example_s3_manager_direct():
     # Initialize S3 manager
     s3 = S3StorageManager(
         bucket="my-data-lake",
-        prefix="fluxforge",  # All operations under s3://my-data-lake/fluxforge/
+        prefix="daedalus",  # All operations under s3://my-data-lake/daedalus/
         region="us-east-1",  # Optional, auto-detected if None
     )
     
     # Write bytes
-    data = b"Hello, S3 from FluxForge!"
+    data = b"Hello, S3 from Daedalus!"
     s3_path = s3.write_bytes(data, "test/hello.txt")
     logger.info(f"  Wrote to: {s3_path}")
     
@@ -389,7 +389,7 @@ def example_s3_polars_integration():
     # Initialize S3 manager
     s3 = S3StorageManager(
         bucket="my-data-lake",
-        prefix="fluxforge"
+        prefix="daedalus"
     )
     
     # Create sample data
@@ -450,7 +450,7 @@ async def example_s3_log_writer():
     # Initialize S3 manager
     s3 = S3StorageManager(
         bucket="my-data-lake",
-        prefix="fluxforge"
+        prefix="daedalus"
     )
     
     # Create S3 log writer
@@ -513,7 +513,7 @@ def example_s3_parquet_writer():
     # Initialize S3 manager
     s3 = S3StorageManager(
         bucket="my-data-lake",
-        prefix="fluxforge"
+        prefix="daedalus"
     )
     
     # Create S3 parquet writer
@@ -632,7 +632,7 @@ storage:
   s3:
     enabled: true
     bucket: "my-data-lake-bucket"
-    prefix: "fluxforge"  # All data under s3://bucket/fluxforge/
+    prefix: "daedalus"  # All data under s3://bucket/daedalus/
     region: "us-east-1"  # Optional, auto-detected if null
     
     # Option 1: Use IAM role (recommended for EC2/ECS)

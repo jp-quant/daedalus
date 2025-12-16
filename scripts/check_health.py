@@ -1,4 +1,4 @@
-"""Health check script for FluxForge segment-based system."""
+"""Health check script for Daedalus segment-based system."""
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -15,7 +15,7 @@ def check_health(config_path: str = None):
     config = load_config(config_path)
     
     print("=" * 80)
-    print("FluxForge Health Check")
+    print("Daedalus Health Check")
     print("=" * 80)
     
     # Create storage backend
@@ -142,7 +142,7 @@ def check_health(config_path: str = None):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="FluxForge Health Check")
+    parser = argparse.ArgumentParser(description="Daedalus Health Check")
     parser.add_argument(
         "--config",
         type=str,

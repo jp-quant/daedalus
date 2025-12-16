@@ -1,6 +1,6 @@
-# FluxForge System Onboarding - Complete Agent Briefing
+# Daedalus System Onboarding - Complete Agent Briefing
 
-**Purpose**: This document provides a comprehensive briefing for a new Copilot agent session to understand the FluxForge market data pipeline system inside-out.
+**Purpose**: This document provides a comprehensive briefing for a new Copilot agent session to understand the Daedalus market data pipeline system inside-out.
 
 ---
 

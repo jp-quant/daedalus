@@ -1,4 +1,4 @@
-# FluxForge Requirements
+# Daedalus Requirements
 
 
 # Core dependencies

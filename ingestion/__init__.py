@@ -1,1 +1,1 @@
-"""FluxForge Ingestion Layer - High-throughput market data collection."""
+"""Daedalus Ingestion Layer - High-throughput market data collection."""

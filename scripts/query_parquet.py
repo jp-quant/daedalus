@@ -150,7 +150,7 @@ def query_with_spark():
     from pyspark.sql import SparkSession
     
     spark = SparkSession.builder \
-        .appName("FluxForge Query") \
+        .appName("Daedalus Query") \
         .config("spark.sql.parquet.enableVectorizedReader", "true") \
         .getOrCreate()
     
@@ -210,7 +210,7 @@ def list_partitions():
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Query FluxForge Parquet files")
+    parser = argparse.ArgumentParser(description="Query Daedalus Parquet files")
     parser.add_argument(
         "--engine",
         choices=["duckdb", "polars", "pandas", "spark", "list"],

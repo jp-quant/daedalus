@@ -1,4 +1,4 @@
 """Config package."""
-from .config import FluxForgeConfig, load_config, save_example_config
+from .config import DaedalusConfig, load_config, save_example_config
 
-__all__ = ["FluxForgeConfig", "load_config", "save_example_config"]
+__all__ = ["DaedalusConfig", "load_config", "save_example_config"]

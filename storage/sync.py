@@ -1,5 +1,5 @@
 """
-Storage synchronization module for FluxForge.
+Storage synchronization module for Daedalus.
 
 Provides robust file synchronization between storage backends (local <-> S3).
 Supports bidirectional sync with optional compaction before upload.

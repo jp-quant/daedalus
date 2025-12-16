@@ -1,5 +1,5 @@
 """
-Examples of using explicit storage configuration with FluxForge.
+Examples of using explicit storage configuration with Daedalus.
 
 Demonstrates how the explicit per-layer storage architecture works
 with both local and S3 backends.

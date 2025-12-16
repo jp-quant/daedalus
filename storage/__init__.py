@@ -1,4 +1,4 @@
-"""Storage backends for FluxForge."""
+"""Storage backends for Daedalus."""
 from .base import StorageBackend, LocalStorage, S3Storage
 from .sync import StorageSync, StorageSyncJob, SyncStats
 

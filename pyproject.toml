@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fluxforge"
+name = "daedalus"
 version = "0.1.0"
 description = "A modular, high-throughput market data ingestion + ETL pipeline"
 readme = "README.md"
@@ -58,18 +58,18 @@ duckdb = [
 ]
 
 all = [
-    "fluxforge[dev,s3,duckdb]",
+    "daedalus[dev,s3,duckdb]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/fluxforge"
-Documentation = "https://github.com/yourusername/fluxforge#readme"
-Repository = "https://github.com/yourusername/fluxforge"
-Issues = "https://github.com/yourusername/fluxforge/issues"
+Homepage = "https://github.com/yourusername/daedalus"
+Documentation = "https://github.com/yourusername/daedalus#readme"
+Repository = "https://github.com/yourusername/daedalus"
+Issues = "https://github.com/yourusername/daedalus/issues"
 
 [project.scripts]
-fluxforge-ingest = "scripts.run_ingestion:main"
-fluxforge-etl = "scripts.run_etl:main"
+daedalus-ingest = "scripts.run_ingestion:main"
+daedalus-etl = "scripts.run_etl:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

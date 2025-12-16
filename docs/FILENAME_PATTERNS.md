@@ -2,7 +2,7 @@
 
 ## Overview
 
-FluxForge uses consistent filename patterns across all Parquet writing operations to ensure:
+Daedalus uses consistent filename patterns across all Parquet writing operations to ensure:
 1. **No file overwrites** - Each file has a unique identifier
 2. **Temporal ordering** - Filenames include timestamps for debugging
 3. **Pattern consistency** - All modules use the same naming convention

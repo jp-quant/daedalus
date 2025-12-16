@@ -1,9 +1,9 @@
-"""FluxForge - A modular, high-throughput market data ingestion + ETL pipeline."""
+"""Daedalus - A modular, high-throughput market data ingestion + ETL pipeline."""
 
 __version__ = "0.1.0"
-__author__ = "FluxForge Contributors"
+__author__ = "Daedalus Contributors"
 __license__ = "MIT"
 
-from config import FluxForgeConfig, load_config
+from config import DaedalusConfig, load_config
 
-__all__ = ["FluxForgeConfig", "load_config", "__version__"]
+__all__ = ["DaedalusConfig", "load_config", "__version__"]
