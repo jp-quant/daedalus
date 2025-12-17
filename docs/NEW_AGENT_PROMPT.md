@@ -134,11 +134,23 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 
 | File | Purpose |
 |------|---------|
+| `etl/parquet_etl_pipeline.py` | **NEW**: Polars-based 100+ feature pipeline (vectorized + stateful) |
 | `etl/features/snapshot.py` | 60+ static features from single orderbook snapshot |
 | `etl/features/state.py` | `StateConfig` + `SymbolState` (stateful processing, rolling stats) |
-| `etl/features/streaming.py` | Online algorithms (Welford variance, RollingSum, RegimeStats) |
+| `etl/features/streaming.py` | Online algorithms (Welford variance, RollingSum, VPINCalculator, KyleLambdaEstimator) |
 
-**Start Here**: Read `etl/features/state.py` docstring for comprehensive overview.
+**Start Here for new Parquet ETL**: Read `docs/PARQUET_ETL_FEATURES.md` for comprehensive feature reference.
+
+**Key Components in `etl/parquet_etl_pipeline.py`**:
+- `ParquetETLConfig` - Research-based configuration defaults
+- `extract_structural_features_vectorized()` - Polars LazyFrame, 60+ features
+- `OrderbookState` - Per-symbol stateful processing (OFI, VPIN, Kyle's Lambda)
+- `ParquetETLPipeline` - Main orchestrator class
+
+**Critical Features Enabled by Default**:
+- VPIN (Volume-Synchronized Probability of Informed Trading) - flow toxicity, predicts volatility
+- Kyle's Lambda - price impact coefficient
+- Band-based depth (0-5bps, 5-10bps, etc.) - liquidity at price-distance
 
 ### Processors
 
@@ -323,6 +335,7 @@ For deeper understanding, read these docs in `docs/`:
 
 | Document | Purpose | When to Read |
 |----------|---------|--------------|
+| `PARQUET_ETL_FEATURES.md` | **Feature engineering reference** | Understanding 100+ features |
 | `SYSTEM_ONBOARDING.md` | **Complete 30-page reference** | Deep dive into any topic |
 | `INDEX.md` | Navigation hub + quick reference | Bookmark for lookups |
 | `PROCESSOR_OPTIONS.md` | Feature engineering config | Customizing features |
@@ -334,10 +347,21 @@ For deeper understanding, read these docs in `docs/`:
 
 ## Key Concepts to Know
 
+### VPIN (Volume-Synchronized Probability of Informed Trading)
+**Paper**: Easley, López de Prado, O'Hara (2012)  
+**Purpose**: Measure order flow toxicity - predicts volatility spikes and flash crashes  
+**Location**: `etl/features/streaming.py` → `VPINCalculator`, `etl/parquet_etl_pipeline.py`  
+**Config**: `enable_vpin=True` (default), `vpin_bucket_volume`, `vpin_window_buckets`
+
 ### Order Flow Imbalance (OFI)
 **Paper**: Cont, Stoikov, Talreja (2010)  
 **Purpose**: Measure buying/selling pressure from orderbook changes  
-**Location**: `etl/features/state.py`
+**Location**: `etl/features/state.py`, `etl/parquet_etl_pipeline.py`
+
+### Kyle's Lambda
+**Paper**: Kyle (1985)  
+**Purpose**: Price impact coefficient - regression of returns on order flow  
+**Location**: `etl/features/streaming.py` → `KyleLambdaEstimator`
 
 ### Microprice
 **Formula**: `(bid_size × ask + ask_size × bid) / (bid_size + ask_size)`  
