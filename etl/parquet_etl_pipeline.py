@@ -550,35 +550,42 @@ def compute_rolling_features_vectorized(
     Returns:
         LazyFrame with rolling features added
     """
+    time_col = "capture_ts"
+    
     # Ensure sorted by time
-    df = df.sort("capture_ts")
+    df = df.sort(time_col)
     
     # Log returns (requires previous row)
     df = df.with_columns([
         (pl.col("mid_price").log() - pl.col("mid_price").shift(1).log()).alias("log_return")
     ])
     
-    # Rolling stats for each horizon
+    # Rolling stats for each horizon using group_by_dynamic
     for h in horizons:
         window_str = f"{h}s"
         
-        # Rolling realized volatility (std of returns)
-        # Note: Polars rolling API may vary by version - these params work in newer versions
-        df = df.with_columns([
-            pl.col("log_return")
-                .rolling_std(window_size=window_str, by="capture_ts", closed="left")  # type: ignore[call-arg]
-                .alias(f"rv_{h}s"),
-            
-            # Rolling mean return
-            pl.col("log_return")
-                .rolling_mean(window_size=window_str, by="capture_ts", closed="left")  # type: ignore[call-arg]
-                .alias(f"mean_return_{h}s"),
-            
-            # Rolling spread stats
-            pl.col("relative_spread")
-                .rolling_mean(window_size=window_str, by="capture_ts", closed="left")  # type: ignore[call-arg]
-                .alias(f"mean_spread_{h}s"),
-        ])
+        # Compute rolling stats via group_by_dynamic and join back
+        rolling_stats = (
+            df.group_by_dynamic(
+                time_col,
+                every="1s",
+                period=window_str,
+                closed="left",
+                label="right",
+            )
+            .agg([
+                pl.col("log_return").std().alias(f"rv_{h}s"),
+                pl.col("log_return").mean().alias(f"mean_return_{h}s"),
+                pl.col("relative_spread").mean().alias(f"mean_spread_{h}s"),
+            ])
+        )
+        
+        # Join rolling stats back to original dataframe
+        df = df.join_asof(
+            rolling_stats,
+            on=time_col,
+            strategy="backward",
+        )
     
     return df
 

@@ -3,7 +3,7 @@ Streaming statistics module.
 Provides online algorithms for rolling means, variances, and sums over time-based windows.
 """
 from collections import deque
-from typing import Deque, Tuple, Optional, Dict
+from typing import Any, Deque, Dict, List, Optional, Tuple
 import math
 
 class Welford:

@@ -6,8 +6,8 @@ Daedalus is a comprehensive market data ingestion, processing, and feature engin
 
 **Key Differentiators:**
 - 🎯 **Mid-frequency focus**: Optimized for seconds-to-hours trading, not HFT
-- 🧠 **60+ microstructure features**: Order Flow Imbalance, realized volatility, regime detection
-- 🔄 **Real-time feature engineering**: Streaming statistics, bar aggregates, multi-timeframe analysis
+- 🧠 **60+ microstructure features**: OFI, MLOFI, realized volatility, Kyle's Lambda, VPIN
+- 🔄 **Research-optimized defaults**: Parameters tuned per academic literature (Cont, Kyle, López de Prado)
 - 🌐 **Multi-exchange**: Unified CCXT Pro interface to 100+ exchanges
 - 💾 **Hybrid storage**: Local + S3 with seamless syncing and compaction
 - ⚙️ **Config-driven**: Zero-code feature customization via YAML
@@ -18,6 +18,7 @@ Daedalus is a comprehensive market data ingestion, processing, and feature engin
 
 - [Quick Start](#-quick-start)
 - [Architecture](#-architecture)
+- [ETL Framework](#-etl-framework)
 - [Features](#-features)
 - [Installation](#-installation)
 - [Configuration](#%EF%B8%8F-configuration)
@@ -48,22 +49,25 @@ python scripts/run_ingestion.py --sources ccxt
 # 4. Start continuous ETL + feature engineering (Terminal 2)
 python scripts/run_etl_watcher.py --poll-interval 30
 
-# 5. Start local → S3 sync (Terminal 3, optional)
+# 5. (Alternative) Run ETL v2 with new modular framework
+python scripts/run_etl_v2.py --channel orderbook
+
+# 6. Start local → S3 sync (Terminal 3, optional)
 python storage/sync.py upload processed/ccxt/ s3://my-bucket/processed/ccxt/
 
-# 6. Run compaction for older data (Terminal 4, periodic)
+# 7. Run compaction for older data (Terminal 4, periodic)
 python scripts/run_compaction.py --source ccxt --partition exchange=binanceus/symbol=BTC-USDT
 
-# 7. Query processed features
+# 8. Query processed features
 python scripts/query_parquet.py data/processed/ccxt/orderbook/hf
 
-# 8. Check system health
+# 9. Check system health
 python scripts/check_health.py
 ```
 
 **Typical Production Setup:**
 - **Terminal 1**: `run_ingestion.py` (continuous WebSocket collection → Bronze Parquet)
-- **Terminal 2**: `run_etl_watcher.py` (near-real-time feature engineering)
+- **Terminal 2**: `run_etl_watcher.py` or `run_etl_v2.py` (near-real-time feature engineering)
 - **Terminal 3**: Periodic `storage/sync.py` (local → S3 backup)
 - **Terminal 4**: Daily `run_compaction.py` (merge small files)
 
@@ -159,6 +163,45 @@ Daedalus follows a **Medallion Architecture** (Bronze → Silver → Gold) that 
 
 ---
 
+## 🔧 ETL Framework
+
+Daedalus has two ETL approaches:
+
+### Option 1: Legacy Pipeline (`run_etl_watcher.py`)
+- Uses `etl/parquet_etl_pipeline.py` monolith
+- Full stateful feature computation (OFI, TFI, MLOFI, Kyle's Lambda, VPIN)
+- Mature and battle-tested
+
+### Option 2: New Modular Framework (`run_etl_v2.py`) 
+- Uses modular `etl/features/`, `etl/transforms/`, `etl/core/` structure
+- Cleaner separation of concerns
+- Loads parameters from `config.yaml` automatically
+- Research-optimized defaults
+
+### Research-Optimized Parameters
+
+Both pipelines support these research-derived settings (configurable in `config.yaml`):
+
+| Parameter | Default | Research Basis |
+|-----------|---------|----------------|
+| `max_levels` | 20 | Zhang et al. (2019) - DeepLOB captures "walls" |
+| `horizons` | [5, 15, 60, 300, 900] | Multi-scale for mid-frequency |
+| `bar_durations` | [60, 300, 900, 3600] | Skip sub-minute (redundant at 1Hz) |
+| `ofi_levels` | 10 | Xu et al. (2019) - MLOFI reduces error 15-70% |
+| `ofi_decay_alpha` | 0.5 | Exponential decay for level weighting |
+| `bands_bps` | [5, 10, 25, 50, 100] | Wider bands for crypto volatility |
+| `kyle_lambda_window` | 300 | 5 min rolling for price impact |
+
+**References**:
+- Cont et al. (2014): OFI price impact
+- Kyle & Obizhaeva (2016): Microstructure invariance  
+- López de Prado (2018): Volume clocks
+- Zhang et al. (2019): DeepLOB deep book features
+- Xu et al. (2019): Multi-level OFI
+- Easley et al. (2012): VPIN for flow toxicity
+
+---
+
 ## ✨ Features
 
 - ✅ **Multi-exchange support**: CCXT Pro unified interface to 100+ exchanges
@@ -174,6 +217,7 @@ Daedalus follows a **Medallion Architecture** (Bronze → Silver → Gold) that 
 - ✅ **Multi-output pipelines**: High-frequency features + bar aggregates
 - ✅ **Config-driven**: YAML configuration, no code changes needed
 - ✅ **Production-ready**: Logging, stats, graceful shutdown, health checks
+- ✅ **Research-optimized**: Parameters tuned per academic literature
 
 ---
 
@@ -515,33 +559,50 @@ data/
 
 ## 🧮 Feature Engineering
 
-Daedalus includes sophisticated orderbook feature engineering for quantitative research.
+Daedalus includes sophisticated orderbook feature engineering for quantitative research, based on academic literature.
 
-### Structural Features (Per Snapshot)
+### Structural Features (Per Snapshot - Vectorized)
 
-| Category | Features |
-|----------|----------|
-| **Price/Spread** | mid_price, spread, relative_spread, microprice |
-| **Depth** | bid_size_L0-L9, ask_size_L0-L9, imbalance_L1 |
-| **Volume Bands** | depth_0_5bps, depth_5_10bps, depth_10_25bps |
-| **Shape** | bid_50pct_depth, ask_50pct_depth, concentration |
-| **Impact** | vwap_bid_5, vwap_ask_5, smart_depth, kyle_lambda |
+| Category | Features | Reference |
+|----------|----------|-----------|
+| **Price/Spread** | mid_price, spread, relative_spread, microprice | Core metrics |
+| **Depth (20 levels)** | bid_size_L0-L19, ask_size_L0-L19, bid_price_L0-L19, ask_price_L0-L19 | Zhang et al. (2019) |
+| **Imbalance** | imbalance_L1, imbalance_L3, imbalance_L5, imbalance_L10, total_imbalance | Cont et al. (2014) |
+| **Volume Bands** | bid/ask_vol_band_0_5bps, 5_10bps, 10_25bps, 25_50bps, 50_100bps | Crypto volatility |
+| **VWAP** | vwap_bid_5, vwap_ask_5, vwap_spread | Volume-weighted pricing |
+| **Smart Depth** | smart_bid_depth, smart_ask_depth, smart_depth_imbalance | Exponential decay weighted |
+| **Book Shape** | bid_slope, ask_slope, center_of_gravity, cog_vs_mid | Ghysels & Nguyen |
+| **Liquidity** | lambda_like, amihud_like, bid/ask_concentration | Kyle (1985) |
 
-### Streaming Features (Rolling Windows)
+### Stateful Features (Path-Dependent - Sequential)
 
-| Horizon | Features |
-|---------|----------|
-| **1s, 5s, 30s, 60s** | log_return, realized_volatility, ofi_sum |
-| **Trade Flow** | buy_volume, sell_volume, trade_flow_imbalance |
-| **Regime** | spread_regime (tight/wide tracking) |
+| Feature | Description | Reference |
+|---------|-------------|-----------|
+| **OFI (Order Flow Imbalance)** | Net aggressive order flow at L1 | Cont et al. (2014) |
+| **MLOFI (Multi-Level OFI)** | Decay-weighted OFI across 10 levels | Xu et al. (2019) |
+| **TFI (Trade Flow Imbalance)** | Signed trade volume between snapshots | Trade classification |
+| **Kyle's Lambda** | Rolling price impact coefficient | Kyle & Obizhaeva (2016) |
+| **VPIN** | Volume-synchronized informed trading probability | Easley et al. (2012) |
+| **Spread Regime** | Dynamic tight/normal/wide classification | Percentile-based |
+| **Mid Velocity/Acceleration** | Price momentum derivatives | Trend detection |
 
-### Bar Aggregates
+### Rolling Statistics (Multi-Horizon)
 
-For each duration (1s, 5s, 30s, 60s):
-- OHLC (Open, High, Low, Close of mid-price)
-- mean_spread, mean_relative_spread
-- mean_l1_imbalance, sum_ofi
-- realized_variance
+For each horizon (5s, 15s, 60s, 300s, 900s):
+- `rv_{h}s`: Realized volatility (rolling std of log returns)
+- `mean_return_{h}s`: Rolling mean log return
+- `mean_spread_{h}s`: Rolling mean relative spread
+- `ofi_sum_{h}s`: Cumulative OFI
+
+### Bar Aggregates (Gold Layer)
+
+For each duration (60s, 300s, 900s, 3600s):
+- **OHLC**: Open, High, Low, Close of mid-price
+- **Spread**: mean_spread, mean_relative_spread
+- **Imbalance**: mean_l1_imbalance, mean_total_imbalance
+- **Flow**: sum_ofi, sum_mlofi
+- **Volatility**: realized_variance, daily_vol_ann
+- **Metadata**: snapshot_count, bar_duration_sec
 
 ---
 

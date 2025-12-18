@@ -105,7 +105,7 @@ from collections import deque
 from datetime import datetime, timezone
 import numpy as np
 
-from etl.processors.time_utils import add_time_fields
+from etl.utils.time_utils import add_time_fields
 from .snapshot import extract_orderbook_features
 from .streaming import RollingWelford, TimeBasedRollingSum, RollingSum, RegimeStats
 
