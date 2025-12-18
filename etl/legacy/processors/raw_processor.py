@@ -3,8 +3,8 @@ import logging
 from typing import Dict, Any, Optional, List, Union
 
 from .base_processor import BaseProcessor
-from etl.parsers.coinbase_parser import CoinbaseParser
-from etl.parsers.ccxt_parser import CcxtParser
+from etl.legacy.parsers.coinbase_parser import CoinbaseParser
+from etl.legacy.parsers.ccxt_parser import CcxtParser
 
 logger = logging.getLogger(__name__)
 

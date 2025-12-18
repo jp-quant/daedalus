@@ -30,10 +30,9 @@ Usage:
 import argparse
 import logging
 import sys
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -43,9 +42,6 @@ import polars as pl
 # Config imports
 from config.config import load_config, DaedalusConfig
 
-# New framework imports
-from etl.core.enums import DataTier, FeatureCategory
-from etl.core.config import FeatureConfig
 from etl.features.orderbook import extract_structural_features, compute_rolling_features
 from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
 from etl.transforms.ticker import compute_ticker_features
@@ -55,41 +51,9 @@ from etl.transforms.bars import aggregate_bars_vectorized
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# RESEARCH-OPTIMIZED DEFAULTS (from orderbook research)
-# These are used if config.yaml doesn't specify processor_options
-# =============================================================================
-RESEARCH_DEFAULTS = {
-    # Orderbook depth: 20 levels captures institutional "walls"
-    "max_levels": 20,
-    
-    # Rolling horizons: [5s micro, 15s short, 60s standard, 300s medium, 900s trend]
-    "horizons": [5, 15, 60, 300, 900],
-    
-    # Bar durations: Skip sub-minute (redundant), focus on 1min+ for patterns
-    "bar_durations": [60, 300, 900, 3600],
-    
-    # OFI: 10 levels with decay reduces forecast error by 15-70%
-    "ofi_levels": 10,
-    "ofi_decay_alpha": 0.5,
-    
-    # Liquidity bands: Wider bands for crypto volatility
-    "bands_bps": [5, 10, 25, 50, 100],
-    
-    # Spread regime: Percentile-based is more robust
-    "use_dynamic_spread_regime": True,
-    "spread_regime_window": 300,
-    "spread_tight_percentile": 0.2,
-    "spread_wide_percentile": 0.8,
-    
-    # Kyle's Lambda window
-    "kyle_lambda_window": 300,
-}
-
-
 def get_processor_options(config: Optional[DaedalusConfig], channel: str) -> Dict[str, Any]:
     """
-    Get processor options from config, falling back to research defaults.
+    Get processor options from config.
     
     Args:
         config: Loaded DaedalusConfig or None
@@ -98,16 +62,60 @@ def get_processor_options(config: Optional[DaedalusConfig], channel: str) -> Dic
     Returns:
         Dict of processor options
     """
-    options = RESEARCH_DEFAULTS.copy()
-    
-    if config and hasattr(config, 'etl') and config.etl:
-        channel_config = config.etl.channels.get(channel)
-        if channel_config and channel_config.processor_options:
-            # Merge config options over defaults
-            options.update(channel_config.processor_options)
-            logger.info(f"Loaded {channel} processor_options from config.yaml")
-    
-    return options
+    if not config or not getattr(config, "etl", None):
+        return {}
+
+    channel_config = config.etl.channels.get(channel)
+    if not channel_config or not channel_config.processor_options:
+        return {}
+
+    return dict(channel_config.processor_options)
+
+
+def _ensure_capture_ts(df: pl.LazyFrame) -> pl.LazyFrame:
+    """Ensure a usable capture_ts column exists as Polars Datetime."""
+    schema_names = set(df.collect_schema().names())
+
+    if "capture_ts" in schema_names:
+        return df.with_columns([pl.col("capture_ts").cast(pl.Datetime).alias("capture_ts")])
+
+    if "timestamp" in schema_names:
+        return df.with_columns([
+            pl.from_epoch(pl.col("timestamp"), time_unit="ms").alias("capture_ts")
+        ])
+
+    if "collected_at" in schema_names:
+        return df.with_columns([
+            pl.from_epoch(pl.col("collected_at"), time_unit="ms").alias("capture_ts")
+        ])
+
+    raise ValueError("Input data is missing capture_ts/timestamp/collected_at; cannot compute rolling features")
+
+
+def _add_stateful_features(df: pl.DataFrame, options: Dict[str, Any]) -> pl.DataFrame:
+    """Compute stateful features row-by-row and hstack onto an orderbook DataFrame."""
+    config_kwargs: Dict[str, Any] = {}
+    for key in StatefulProcessorConfig.__dataclass_fields__.keys():
+        if key in options:
+            config_kwargs[key] = options[key]
+
+    processor = StatefulFeatureProcessor(StatefulProcessorConfig(**config_kwargs))
+
+    features_rows = []
+    for record in df.iter_rows(named=True):
+        features_rows.append(processor.process_orderbook(record))
+
+    if not features_rows:
+        return df
+
+    features_df = pl.DataFrame(features_rows)
+    # Avoid accidental collisions: only add truly new columns
+    existing = set(df.columns)
+    new_cols = [c for c in features_df.columns if c not in existing]
+    if not new_cols:
+        return df
+
+    return df.hstack(features_df.select(new_cols))
 
 
 def process_orderbook(
@@ -136,10 +144,11 @@ def process_orderbook(
     Returns:
         Dict with processing statistics
     """
-    max_levels = options.get("max_levels", RESEARCH_DEFAULTS["max_levels"])
-    horizons = options.get("horizons", RESEARCH_DEFAULTS["horizons"])
-    bar_durations = options.get("bar_durations", RESEARCH_DEFAULTS["bar_durations"])
-    bands_bps = options.get("bands_bps", RESEARCH_DEFAULTS["bands_bps"])
+    max_levels = int(options.get("max_levels", 20))
+    horizons = list(options.get("horizons", [5, 15, 60, 300, 900]))
+    bar_durations = list(options.get("bar_durations", [60, 300, 900, 3600]))
+    bands_bps = list(options.get("bands_bps", [5, 10, 25, 50, 100]))
+    enable_stateful = bool(options.get("enable_stateful", True))
     
     stats = {"rows_processed": 0, "features_computed": 0, "bars_computed": {}}
     
@@ -149,6 +158,7 @@ def process_orderbook(
     logger.info(f"  horizons: {horizons}")
     logger.info(f"  bar_durations: {bar_durations}")
     logger.info(f"  bands_bps: {bands_bps}")
+    logger.info(f"  enable_stateful: {enable_stateful}")
     
     # Discover input files
     parquet_files = list(input_path.glob("*.parquet"))
@@ -169,20 +179,26 @@ def process_orderbook(
     # Load and process
     logger.info("Loading data...")
     df = pl.scan_parquet([str(f) for f in parquet_files])
+
+    # Ensure capture_ts exists for rolling features
+    df = _ensure_capture_ts(df)
     
     # Step 1: Extract structural features
     logger.info(f"Extracting structural features (max_levels={max_levels})...")
     df = extract_structural_features(df, max_levels=max_levels, bands_bps=bands_bps)
-    
-    # Step 2: Add log return
-    df = df.with_columns([
-        (pl.col("mid_price") / pl.col("mid_price").shift(1)).log().alias("log_return"),
-    ])
-    
-    # Step 3: Compute rolling features
+
+    # Optional stateful features (requires sequential processing)
+    if enable_stateful:
+        logger.info("Collecting for stateful feature computation...")
+        base_df = df.collect()
+        logger.info("Computing stateful features...")
+        base_df = _add_stateful_features(base_df, options)
+        df = base_df.lazy()
+
+    # Compute rolling features (vectorized)
     logger.info(f"Computing rolling features (horizons={horizons})...")
     df = compute_rolling_features(df, horizons=horizons)
-    
+
     # Collect silver tier
     logger.info("Collecting silver tier data...")
     silver_df = df.collect()
@@ -358,14 +374,16 @@ def main():
     )
     
     # Load configuration
-    config = None
+    config: Optional[DaedalusConfig] = None
     try:
         config = load_config(args.config)
         logger.info(f"Loaded config from: {args.config or 'auto-detected'}")
     except FileNotFoundError as e:
-        logger.warning(f"Config not found ({e}), using research defaults")
+        logger.warning(f"Config not found ({e}), using built-in defaults")
+        config = DaedalusConfig()
     except Exception as e:
-        logger.warning(f"Error loading config ({e}), using research defaults")
+        logger.warning(f"Error loading config ({e}), using built-in defaults")
+        config = DaedalusConfig()
     
     # Parse paths
     input_base = Path(args.input)
@@ -377,7 +395,7 @@ def main():
     logger.info(f"Input:  {input_base}")
     logger.info(f"Output: {output_base}")
     logger.info(f"Channel: {args.channel}")
-    logger.info(f"Config:  {'Loaded from config.yaml' if config else 'Using research defaults'}")
+    logger.info(f"Config:  {'Loaded from config.yaml' if args.config else 'Auto-detected or defaults'}")
     if args.dry_run:
         logger.info("MODE: DRY RUN")
     logger.info("=" * 60)

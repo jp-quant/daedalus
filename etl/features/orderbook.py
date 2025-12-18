@@ -444,18 +444,36 @@ def compute_rolling_features(
         horizons = [5, 15, 60, 300, 900]
     
     time_col = "capture_ts"
+
+    existing_cols = set(df.collect_schema().names())
     
     # Ensure sorted by time
     df = df.sort(time_col)
     
     # Log returns
-    df = df.with_columns([
-        (pl.col("mid_price").log() - pl.col("mid_price").shift(1).log()).alias("log_return")
-    ])
+    if "log_return" not in existing_cols:
+        df = df.with_columns([
+            (pl.col("mid_price").log() - pl.col("mid_price").shift(1).log()).alias("log_return")
+        ])
     
     # Rolling stats for each horizon using group_by_dynamic
     for h in horizons:
         window_str = f"{h}s"
+
+        agg_exprs = []
+        rv_name = f"rv_{h}s"
+        mean_ret_name = f"mean_return_{h}s"
+        mean_spread_name = f"mean_spread_{h}s"
+
+        if rv_name not in existing_cols:
+            agg_exprs.append(pl.col("log_return").std().alias(rv_name))
+        if mean_ret_name not in existing_cols:
+            agg_exprs.append(pl.col("log_return").mean().alias(mean_ret_name))
+        if mean_spread_name not in existing_cols:
+            agg_exprs.append(pl.col("relative_spread").mean().alias(mean_spread_name))
+
+        if not agg_exprs:
+            continue
         
         # Compute rolling stats via group_by_dynamic and join back
         rolling_stats = (
@@ -466,11 +484,7 @@ def compute_rolling_features(
                 closed="left",
                 label="right",
             )
-            .agg([
-                pl.col("log_return").std().alias(f"rv_{h}s"),
-                pl.col("log_return").mean().alias(f"mean_return_{h}s"),
-                pl.col("relative_spread").mean().alias(f"mean_spread_{h}s"),
-            ])
+            .agg(agg_exprs)
         )
         
         # Join rolling stats back to original dataframe

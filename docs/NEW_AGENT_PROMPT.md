@@ -134,18 +134,18 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 
 | File | Purpose |
 |------|---------|
-| `etl/parquet_etl_pipeline.py` | **NEW**: Polars-based 100+ feature pipeline (vectorized + stateful) |
-| `etl/features/snapshot.py` | 60+ static features from single orderbook snapshot |
-| `etl/features/state.py` | `StateConfig` + `SymbolState` (stateful processing, rolling stats) |
-| `etl/features/streaming.py` | Online algorithms (Welford variance, RollingSum, VPINCalculator, KyleLambdaEstimator) |
+| `etl/features/orderbook.py` | Vectorized structural + rolling orderbook features (Polars) |
+| `etl/features/stateful.py` | Stateful (sequential) orderbook features: OFI/MLOFI/TFI/Kyle/VPIN |
+| `etl/features/streaming.py` | Online stats primitives (RollingWelford, RollingSum, VPINCalculator, KyleLambdaEstimator) |
+| `etl/transforms/` | Channel transforms (ticker/trades/bars) used by scripts |
+| `scripts/run_etl_v2.py` | Batch runner that reads raw Parquet segments and writes silver/gold outputs |
 
-**Start Here for new Parquet ETL**: Read `docs/PARQUET_ETL_FEATURES.md` for comprehensive feature reference.
+**Start here**: Read `docs/PARQUET_ETL_FEATURES.md` for feature reference and `scripts/run_etl_v2.py` for the runnable batch path.
 
-**Key Components in `etl/parquet_etl_pipeline.py`**:
-- `ParquetETLConfig` - Research-based configuration defaults
-- `extract_structural_features_vectorized()` - Polars LazyFrame, 60+ features
-- `OrderbookState` - Per-symbol stateful processing (OFI, VPIN, Kyle's Lambda)
-- `ParquetETLPipeline` - Main orchestrator class
+**Key Components for orderbook features**:
+- `extract_structural_features()` in `etl/features/orderbook.py`
+- `compute_rolling_features()` in `etl/features/orderbook.py`
+- `StatefulFeatureProcessor` in `etl/features/stateful.py`
 
 **Critical Features Enabled by Default**:
 - VPIN (Volume-Synchronized Probability of Informed Trading) - flow toxicity, predicts volatility
@@ -154,20 +154,13 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 
 ### Processors
 
-| File | Purpose |
-|------|---------|
-| `etl/processors/ccxt/advanced_orderbook_processor.py` | Main orderbook feature engine |
-| `etl/processors/ccxt/ticker_processor.py` | Ticker data enrichment |
-| `etl/processors/ccxt/trades_processor.py` | Trade data enrichment |
+This repo’s current “v2” batch path uses feature modules directly (see `scripts/run_etl_v2.py`).
 
 ### Orchestration
 
-| File | Purpose |
-|------|---------|
-| `etl/orchestrators/ccxt_segment_pipeline.py` | **CRITICAL**: Multi-channel routing |
-| `etl/orchestrators/pipeline.py` | Base ETL pipeline (Reader → Processor → Writer) |
-| `etl/orchestrators/multi_output_pipeline.py` | Splits output (HF + bars) |
-| `etl/job.py` | ETL job runner - processes segments |
+Orchestration entry points:
+- `scripts/run_ingestion.py` (collect raw)
+- `scripts/run_etl_v2.py` (batch transform raw parquet → silver/gold)
 
 ### Configuration
 
@@ -211,12 +204,26 @@ etl:
       enabled: true
       partition_cols: ["exchange", "symbol", "date"]
       processor_options:
-        max_levels: 10           # Orderbook depth levels
-        ofi_levels: 5            # Levels for multi-level OFI
-        horizons: [1, 5, 30, 60] # Rolling window sizes (seconds)
-        bar_durations: [1, 5, 30, 60]  # Bar aggregation intervals
-        hf_emit_interval: 1.0    # HF snapshot rate (seconds)
-        bands_bps: [5, 10, 25, 50]     # Liquidity bands (basis points)
+                # Structural + rolling features
+                compute_features: true
+                max_levels: 20
+                bands_bps: [5, 10, 25, 50, 100]
+                horizons: [5, 15, 60, 300, 900]
+                bar_durations: [60, 300, 900, 3600]
+
+                # Stateful features (sequential)
+                enable_stateful: true
+                ofi_levels: 10
+                ofi_decay_alpha: 0.5
+                use_dynamic_spread_regime: true
+                spread_regime_window: 300
+                spread_tight_percentile: 0.2
+                spread_wide_percentile: 0.8
+                tight_spread_threshold: 0.0001
+                kyle_lambda_window: 300
+                enable_vpin: true
+                vpin_bucket_volume: 1.0
+                vpin_window_buckets: 50
 ```
 
 ### Configuration Flow
@@ -228,9 +235,9 @@ IngestionConfig.raw_format → StreamingParquetWriter or LogWriter
     ↓
 etl.channels.orderbook.processor_options
     ↓
-ETLJob → CcxtSegmentPipeline → CcxtAdvancedOrderbookProcessor
+scripts/run_etl_v2.py
     ↓
-StateConfig (dataclass) → SymbolState (per-symbol processing)
+etl/features/orderbook.py (vectorized) + etl/features/stateful.py (sequential)
 ```
 
 ---

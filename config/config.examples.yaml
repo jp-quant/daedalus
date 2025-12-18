@@ -345,8 +345,33 @@ etl:
         - "symbol"
         - "date"
       processor_options:
+        # Structural + rolling feature extraction
         compute_features: true
-        max_levels: 20  # Depth for feature extraction
+        max_levels: 20
+        bands_bps: [5, 10, 25, 50, 100]
+
+        # Rolling horizons (seconds)
+        horizons: [5, 15, 60, 300, 900]
+
+        # Bar aggregation windows (seconds)
+        bar_durations: [60, 300, 900, 3600]
+
+        # Stateful features (sequential) - OFI/MLOFI/Regimes/Kyle/VPIN
+        enable_stateful: true
+        ofi_levels: 10
+        ofi_decay_alpha: 0.5
+
+        use_dynamic_spread_regime: true
+        spread_regime_window: 300
+        spread_tight_percentile: 0.2
+        spread_wide_percentile: 0.8
+        tight_spread_threshold: 0.0001
+
+        kyle_lambda_window: 300
+
+        enable_vpin: true
+        vpin_bucket_volume: 1.0
+        vpin_window_buckets: 50
 
     trades:
       partition_cols:

@@ -180,7 +180,32 @@ class ETLConfig(BaseModel):
         ),
         "orderbook": ChannelETLConfig(
             partition_cols=["exchange", "symbol", "date"],
-            processor_options={"add_derived_fields": True}
+            processor_options={
+                # Core feature extraction
+                "compute_features": True,
+                "max_levels": 20,
+                "bands_bps": [5, 10, 25, 50, 100],
+
+                # Rolling horizons (seconds)
+                "horizons": [5, 15, 60, 300, 900],
+
+                # Bar aggregation windows (seconds)
+                "bar_durations": [60, 300, 900, 3600],
+
+                # Stateful feature defaults (OFI/MLOFI/Regimes/Kyle/VPIN)
+                "enable_stateful": True,
+                "ofi_levels": 10,
+                "ofi_decay_alpha": 0.5,
+                "use_dynamic_spread_regime": True,
+                "spread_regime_window": 300,
+                "spread_tight_percentile": 0.2,
+                "spread_wide_percentile": 0.8,
+                "tight_spread_threshold": 0.0001,
+                "kyle_lambda_window": 300,
+                "enable_vpin": True,
+                "vpin_bucket_volume": 1.0,
+                "vpin_window_buckets": 50,
+            }
         ),
         "trades": ChannelETLConfig(
             partition_cols=["exchange", "symbol", "date"],

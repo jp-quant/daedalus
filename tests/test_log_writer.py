@@ -9,13 +9,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ingestion.writers.log_writer import LogWriter
 from ingestion.utils.time import utc_now
+from storage.base import LocalStorage
 
 
 @pytest.mark.asyncio
 async def test_log_writer_basic(temp_dir):
     """Test basic log writer functionality."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=5,
         flush_interval_seconds=1.0,
@@ -39,20 +43,28 @@ async def test_log_writer_basic(temp_dir):
     # Stop writer
     await writer.stop()
     
-    # Check file was created
-    log_file = temp_dir / "test" / f"{utc_now().strftime('%Y-%m-%d')}.ndjson"
-    assert log_file.exists()
-    
-    # Check records
-    lines = log_file.read_text().strip().split('\n')
-    assert len(lines) == 10
+    # Final segment should be moved to ready/
+    ready_dir = temp_dir / "ready" / "test"
+    segments = sorted(ready_dir.glob("segment_*.ndjson"))
+    assert len(segments) >= 1
+
+    # Check records across all segments
+    all_lines = []
+    for seg in segments:
+        content = seg.read_text().strip()
+        if content:
+            all_lines.extend(content.split("\n"))
+    assert len(all_lines) == 10
 
 
 @pytest.mark.asyncio
 async def test_log_writer_backpressure(temp_dir):
     """Test backpressure handling."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=100,
         flush_interval_seconds=10.0,
@@ -75,8 +87,11 @@ async def test_log_writer_backpressure(temp_dir):
 @pytest.mark.asyncio
 async def test_log_writer_stats(temp_dir):
     """Test statistics tracking."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=5,
         flush_interval_seconds=1.0,

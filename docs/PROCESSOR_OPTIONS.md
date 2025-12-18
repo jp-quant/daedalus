@@ -10,67 +10,63 @@ config.yaml
     ↓
 ETLConfig (Pydantic)
     ↓
-ETLJob.run()
-    ↓
-CcxtSegmentPipeline.__init__(channel_config=...)
-    ↓
-CcxtAdvancedOrderbookProcessor(**processor_options)
-    ↓
-StateConfig (dataclass)
+scripts/run_etl_v2.py (batch runner)
+  ↓
+etl/features/orderbook.py (vectorized structural + rolling)
+etl/features/stateful.py (sequential stateful features, optional)
 ```
 
 ## Orderbook Processor Options
 
-The `CcxtAdvancedOrderbookProcessor` accepts the following parameters via `processor_options`:
+The orderbook path consumes the following keys via `processor_options`:
 
 ### Feature Extraction Settings
 
-- **`max_levels`** (int, default: 10)
+- **`max_levels`** (int, default: 20)
   - Number of depth levels to include in feature extraction
   - Higher values capture more of the order book but increase computation
   - Example: `max_levels: 20`
 
-- **`ofi_levels`** (int, default: 5)
-  - Number of levels used for Order Flow Imbalance (OFI) calculation
-  - Typically fewer than `max_levels` since OFI focuses on top-of-book
-  - Example: `ofi_levels: 5`
-
-- **`bands_bps`** (List[int], default: [5, 10, 25, 50])
+- **`bands_bps`** (List[int], default: `[5, 10, 25, 50, 100]`)
   - Basis point bands for liquidity analysis
   - Measures available liquidity at different price distances
-  - Example: `bands_bps: [5, 10, 25, 50]`
+  - Example: `bands_bps: [5, 10, 25, 50, 100]`
 
-### High-Frequency Output Settings
+### Rolling / Aggregation
 
-- **`hf_emit_interval`** (float, default: 1.0)
-  - Emit high-frequency feature snapshots every N seconds
-  - Controls sampling rate for the HF output stream
-  - Example: `hf_emit_interval: 1.0` (emit every second)
-  - Note: Previously named `hf_sample_interval` (still supported for backward compatibility)
+- **`horizons`** (List[int], default: `[5, 15, 60, 300, 900]`)
+  - Rolling window sizes in seconds
+  - Used by `etl/features/orderbook.py::compute_rolling_features`
 
-### Bar Aggregation Settings
-
-- **`bar_durations`** (List[int], default: [1, 5, 30, 60])
+- **`bar_durations`** (List[int], default: `[60, 300, 900, 3600]`)
   - Bar window sizes in seconds
-  - Generates OHLCV + microstructure statistics for each duration
-  - Example: `bar_durations: [5, 15, 60]` (5s, 15s, 60s bars)
+  - Used by `etl/transforms/bars.py` aggregation
 
-- **`horizons`** (List[int], default: [1, 5, 30, 60])
-  - Rolling window sizes in seconds for streaming statistics
-  - Used for computing moving averages, volatility, etc.
-  - Example: `horizons: [1, 5, 30, 60]`
+### Stateful Feature Settings (Optional)
 
-### Advanced Options
+- **`enable_stateful`** (bool, default: `true`)
+  - If true, `scripts/run_etl_v2.py` will compute sequential stateful features via `etl/features/stateful.py`
 
-- **`keep_raw_arrays`** (bool, default: false)
-  - Whether to include raw bid/ask price/quantity arrays in output
-  - Warning: Increases output size significantly
-  - Example: `keep_raw_arrays: false`
+- **`ofi_levels`** (int, default: 10)
+  - Number of levels used for Order Flow Imbalance (OFI) calculation
+  - Typically fewer than `max_levels` since OFI focuses on top-of-book
 
-- **`tight_spread_threshold`** (float, default: 0.0001)
-  - Spread threshold in decimal for regime classification
-  - Example: `0.0001` = 1 basis point = 0.01%
-  - Used to identify "tight spread" vs "wide spread" regimes
+- **`ofi_decay_alpha`** (float, default: `0.5`)
+  - Exponential decay parameter for multi-level OFI (MLOFI)
+
+- **`use_dynamic_spread_regime`** (bool, default: `true`)
+- **`spread_regime_window`** (int, default: `300`)
+- **`spread_tight_percentile`** (float, default: `0.2`)
+- **`spread_wide_percentile`** (float, default: `0.8`)
+- **`tight_spread_threshold`** (float, default: `0.0001`)
+  - Static fallback threshold (used if dynamic regime is disabled)
+
+- **`kyle_lambda_window`** (int, default: `300`)
+  - Window size (seconds) for Kyle’s Lambda estimator
+
+- **`enable_vpin`** (bool, default: `true`)
+- **`vpin_bucket_volume`** (float, default: `1.0`)
+- **`vpin_window_buckets`** (int, default: `50`)
 
 ## Example Configuration
 
@@ -83,21 +79,24 @@ etl:
         - "symbol"
         - "date"
       processor_options:
-        # Feature extraction
+        compute_features: true
         max_levels: 20
-        ofi_levels: 5
-        bands_bps: [5, 10, 25, 50]
-        
-        # HF output (1s snapshots)
-        hf_emit_interval: 1.0
-        
-        # Bar aggregation (5s, 15s, 60s)
-        bar_durations: [5, 15, 60]
-        horizons: [1, 5, 30, 60]
-        
-        # Advanced
-        keep_raw_arrays: false
+        bands_bps: [5, 10, 25, 50, 100]
+        horizons: [5, 15, 60, 300, 900]
+        bar_durations: [60, 300, 900, 3600]
+
+        enable_stateful: true
+        ofi_levels: 10
+        ofi_decay_alpha: 0.5
+        use_dynamic_spread_regime: true
+        spread_regime_window: 300
+        spread_tight_percentile: 0.2
+        spread_wide_percentile: 0.8
         tight_spread_threshold: 0.0001
+        kyle_lambda_window: 300
+        enable_vpin: true
+        vpin_bucket_volume: 1.0
+        vpin_window_buckets: 50
 ```
 
 ## Testing Configuration
@@ -127,86 +126,36 @@ The processor supports backward compatibility for renamed parameters:
 ### Code Locations
 
 - **Configuration model**: `config/config.py` - `ChannelETLConfig.processor_options`
-- **Pipeline routing**: `etl/orchestrators/ccxt_segment_pipeline.py` - Line 99
-- **Processor initialization**: `etl/processors/ccxt/advanced_orderbook_processor.py` - Line 21-39
-- **State configuration**: `etl/features/state.py` - `StateConfig` dataclass
+- **Batch runner**: `scripts/run_etl_v2.py`
+- **Vectorized orderbook features**: `etl/features/orderbook.py`
+- **Stateful orderbook features**: `etl/features/stateful.py`
 
-## Other Processors
+## Other Channels
 
-Currently only the `CcxtAdvancedOrderbookProcessor` accepts `processor_options`. Other processors (ticker, trades) use default behavior but support basic options:
-
-### Ticker Processor
-```yaml
-ticker:
-  processor_options:
-    # Currently no custom options, uses defaults
-```
-
-### Trades Processor
-```yaml
-trades:
-  processor_options:
-    # Currently no custom options, uses defaults
-```
-
-The framework supports extending these processors to accept options in the future by:
-1. Adding parameters to their `__init__(**kwargs)` method
-2. Defining which parameters they accept
-3. Using try/except fallback for backward compatibility
+Ticker and trades channels also accept a `processor_options` dict, but current transforms primarily use defaults.
 
 ## Debugging
 
 If your configuration isn't being applied:
 
-1. Check logs for the initialization message:
-   ```
-   [CcxtAdvancedOrderbookProcessor] Initialized with config: StateConfig(...)
-   ```
+1. Verify parameter names match exactly (case-sensitive)
 
-2. Verify parameter names match exactly (case-sensitive)
-
-3. Run the test script to validate the flow:
+2. Run the config flow script:
    ```bash
    python scripts/test_config_flow.py
    ```
 
-4. Enable DEBUG logging to see parameter extraction:
+3. Enable DEBUG logging to see parameter extraction:
    ```yaml
    log_level: "DEBUG"
    ```
-
-## Changes Made
-
-### Files Modified
-
-1. **`etl/orchestrators/ccxt_segment_pipeline.py`**
-   - Added debug logging for processor options
-   - Added fallback for processors that don't accept options
-
-2. **`etl/processors/ccxt/advanced_orderbook_processor.py`**
-   - Added parameter name mapping (backward compatibility)
-   - Improved initialization logging
-
-3. **`config/config.yaml`**
-   - Updated orderbook processor_options with proper parameter names
-   - Added comprehensive documentation for each parameter
-
-### Files Added
-
-4. **`scripts/test_config_flow.py`**
-   - New test script to verify configuration flow
-   - Validates parameters from config → processor → StateConfig
-
-5. **`docs/PROCESSOR_OPTIONS.md`**
-   - This comprehensive guide
 
 ## Performance Considerations
 
 - **`max_levels`**: Higher values increase memory and computation linearly
 - **`bar_durations`**: More durations = more output files
-- **`hf_emit_interval`**: Lower values = more HF snapshots = larger output
 - **`horizons`**: Affects rolling statistic computation but minimal overhead
-- **`keep_raw_arrays`**: Can 10x the output size, use sparingly
+- **`enable_stateful`**: If true, adds a Python loop over snapshots (slower than fully vectorized)
 
 ## Recommendations
 
@@ -214,24 +163,24 @@ If your configuration isn't being applied:
 ```yaml
 processor_options:
   max_levels: 10
-  hf_emit_interval: 0.1  # 100ms snapshots
-  bar_durations: [1, 5, 15]
+  horizons: [5, 15, 60]
+  bar_durations: [60, 300]
+  enable_stateful: false
 ```
 
 ### For Research/Analysis
 ```yaml
 processor_options:
   max_levels: 50
-  hf_emit_interval: 1.0
-  bar_durations: [1, 5, 15, 30, 60, 300]
-  keep_raw_arrays: true
+  horizons: [5, 15, 60, 300, 900]
+  bar_durations: [60, 300, 900, 3600]
+  enable_stateful: true
 ```
 
 ### For Storage Efficiency
 ```yaml
 processor_options:
   max_levels: 10
-  hf_emit_interval: 5.0  # Only every 5s
   bar_durations: [60, 300]  # Only 1min and 5min bars
-  keep_raw_arrays: false
+  enable_stateful: false
 ```

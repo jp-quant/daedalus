@@ -11,8 +11,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from config.config import load_config
-from etl.orchestrators.ccxt_segment_pipeline import CcxtSegmentPipeline
-from etl.features.state import StateConfig
+from etl.features.stateful import StatefulProcessorConfig
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -20,8 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def test_config_flow():
-    """Test that processor_options flow from config.yaml to processors."""
+def run_config_flow_check() -> bool:
+    """Run a config-flow sanity check. Returns True on success."""
     
     # Load config
     logger.info("Loading configuration...")
@@ -46,14 +45,22 @@ def test_config_flow():
     
     # Expected parameters
     expected_params = [
-        'max_levels',
-        'ofi_levels', 
-        'bands_bps',
-        'hf_emit_interval',
-        'bar_durations',
-        'horizons',
-        'keep_raw_arrays',
-        'tight_spread_threshold'
+        "max_levels",
+        "bands_bps",
+        "horizons",
+        "bar_durations",
+        "enable_stateful",
+        "ofi_levels",
+        "ofi_decay_alpha",
+        "use_dynamic_spread_regime",
+        "spread_regime_window",
+        "spread_tight_percentile",
+        "spread_wide_percentile",
+        "tight_spread_threshold",
+        "kyle_lambda_window",
+        "enable_vpin",
+        "vpin_bucket_volume",
+        "vpin_window_buckets",
     ]
     
     # Verify each parameter
@@ -65,63 +72,57 @@ def test_config_flow():
             logger.warning(f"✗ {param}: not set (will use default)")
             missing_params.append(param)
     
-    # Test StateConfig creation
-    logger.info("\nTesting StateConfig creation...")
+    # Test StatefulProcessorConfig creation (stateful module)
+    logger.info("\nTesting StatefulProcessorConfig creation...")
     try:
-        # Filter parameters to match StateConfig
-        state_config_params = {
+        stateful_params = {
             k: v for k, v in processor_options.items()
-            if k in StateConfig.__annotations__
+            if k in StatefulProcessorConfig.__dataclass_fields__
         }
-        logger.info(f"Filtered StateConfig params: {state_config_params}")
-        
-        state_config = StateConfig(**state_config_params)
-        logger.info(f"✓ StateConfig created successfully:")
-        logger.info(f"  - max_levels: {state_config.max_levels}")
-        logger.info(f"  - ofi_levels: {state_config.ofi_levels}")
-        logger.info(f"  - hf_emit_interval: {state_config.hf_emit_interval}")
-        logger.info(f"  - bar_durations: {state_config.bar_durations}")
-        logger.info(f"  - horizons: {state_config.horizons}")
-        logger.info(f"  - bands_bps: {state_config.bands_bps}")
-        logger.info(f"  - keep_raw_arrays: {state_config.keep_raw_arrays}")
-        logger.info(f"  - tight_spread_threshold: {state_config.tight_spread_threshold}")
+        logger.info(f"Filtered StatefulProcessorConfig params: {stateful_params}")
+
+        stateful_config = StatefulProcessorConfig(**stateful_params)
+        logger.info("✓ StatefulProcessorConfig created successfully")
+        logger.info(f"  - horizons: {stateful_config.horizons}")
+        logger.info(f"  - ofi_levels: {stateful_config.ofi_levels}")
+        logger.info(f"  - ofi_decay_alpha: {stateful_config.ofi_decay_alpha}")
+        logger.info(f"  - spread_regime_window: {stateful_config.spread_regime_window}")
+        logger.info(f"  - kyle_lambda_window: {stateful_config.kyle_lambda_window}")
+        logger.info(f"  - enable_vpin: {stateful_config.enable_vpin}")
         
     except Exception as e:
-        logger.error(f"✗ Failed to create StateConfig: {e}")
+        logger.error(f"✗ Failed to create StatefulProcessorConfig: {e}")
         return False
     
-    # Test processor initialization with config
-    logger.info("\nTesting processor initialization...")
+    # Sanity check that feature functions can be called with configured parameters
+    logger.info("\nTesting orderbook feature module wiring...")
     try:
-        from etl.processors.ccxt.advanced_orderbook_processor import CcxtAdvancedOrderbookProcessor
-        
-        processor = CcxtAdvancedOrderbookProcessor(**processor_options)
-        logger.info("✓ CcxtAdvancedOrderbookProcessor initialized successfully")
-        logger.info(f"  Processor config: {processor.config}")
-        
-        # Verify the values match what we set in config.yaml
-        # Research-optimized defaults (Dec 2025)
-        assert processor.config.max_levels == 20, f"Expected max_levels=20, got {processor.config.max_levels}"
-        assert processor.config.ofi_levels == 10, f"Expected ofi_levels=10, got {processor.config.ofi_levels}"
-        assert processor.config.ofi_decay_alpha == 0.5, f"Expected ofi_decay_alpha=0.5, got {processor.config.ofi_decay_alpha}"
-        assert processor.config.hf_emit_interval == 1.0, f"Expected hf_emit_interval=1.0, got {processor.config.hf_emit_interval}"
-        assert processor.config.bar_durations == [60, 300, 900, 3600], f"Expected bar_durations=[60,300,900,3600], got {processor.config.bar_durations}"
-        assert processor.config.horizons == [5, 15, 60, 300, 900], f"Expected horizons=[5,15,60,300,900], got {processor.config.horizons}"
-        assert processor.config.bands_bps == [5, 10, 25, 50, 100], f"Expected bands_bps with 100, got {processor.config.bands_bps}"
-        assert processor.config.use_dynamic_spread_regime == True, f"Expected use_dynamic_spread_regime=True"
-        assert processor.config.kyle_lambda_window == 300, f"Expected kyle_lambda_window=300"
-        logger.info("✓ All configuration values verified (research-optimized)")
-        
-        # Log new research features
-        logger.info("\n--- NEW RESEARCH FEATURES ---")
-        logger.info(f"  ofi_decay_alpha: {processor.config.ofi_decay_alpha} (MLOFI decay)")
-        logger.info(f"  use_dynamic_spread_regime: {processor.config.use_dynamic_spread_regime}")
-        logger.info(f"  spread_regime_window: {processor.config.spread_regime_window}s")
-        logger.info(f"  kyle_lambda_window: {processor.config.kyle_lambda_window}s")
-        logger.info(f"  vpin_bucket_count: {processor.config.vpin_bucket_count}")
+        from etl.features.orderbook import extract_structural_features, compute_rolling_features
+
+        # Just verify signatures are callable with our configured knobs.
+        max_levels = int(processor_options.get("max_levels", 20))
+        bands_bps = processor_options.get("bands_bps", [5, 10, 25, 50, 100])
+        horizons = processor_options.get("horizons", [5, 15, 60, 300, 900])
+
+        # Minimal dummy schema (won't be executed here)
+        import polars as pl
+        dummy = pl.LazyFrame(
+            {
+                "timestamp": [0],
+                "capture_ts": ["2025-01-01 00:00:00"],
+                "bids": [[{"price": 100.0, "size": 1.0}]],
+                "asks": [[{"price": 101.0, "size": 1.0}]],
+            }
+        ).with_columns(pl.col("capture_ts").str.to_datetime())
+
+        lf = extract_structural_features(dummy, max_levels=max_levels, bands_bps=bands_bps)
+        lf = compute_rolling_features(lf, horizons=horizons)
+        _ = lf.collect()
+
+        logger.info("✓ Orderbook feature modules executed on dummy data")
         
     except Exception as e:
-        logger.error(f"✗ Failed to initialize processor: {e}")
+        logger.error(f"✗ Feature module wiring failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -132,5 +133,5 @@ def test_config_flow():
     return True
 
 if __name__ == "__main__":
-    success = test_config_flow()
+    success = run_config_flow_check()
     sys.exit(0 if success else 1)

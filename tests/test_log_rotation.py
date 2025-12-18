@@ -9,13 +9,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from ingestion.writers.log_writer import LogWriter
 from ingestion.utils.time import utc_now
+from storage.base import LocalStorage
 
 
 @pytest.mark.asyncio
 async def test_segment_initialization(temp_dir):
     """Test that first segment is created on start."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=5,
         flush_interval_seconds=1.0,
@@ -40,8 +44,11 @@ async def test_segment_initialization(temp_dir):
 @pytest.mark.asyncio
 async def test_segment_rotation_on_size(temp_dir):
     """Test that segment rotates when size limit is reached."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=10,
         flush_interval_seconds=0.5,
@@ -82,8 +89,11 @@ async def test_segment_rotation_on_size(temp_dir):
 @pytest.mark.asyncio
 async def test_segment_naming_convention(temp_dir):
     """Test segment filename format."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=5,
         flush_interval_seconds=1.0,
@@ -94,12 +104,13 @@ async def test_segment_naming_convention(temp_dir):
     await writer.start()
     
     # Check filename format: segment_20251120T14_00001.ndjson
-    segment_file = writer.current_segment_path
-    assert segment_file.name.startswith("segment_")
-    assert segment_file.name.endswith(".ndjson")
+    segment_name = writer.current_segment_name
+    assert segment_name is not None
+    assert segment_name.startswith("segment_")
+    assert segment_name.endswith(".ndjson")
     
     # Check format has date and counter
-    parts = segment_file.stem.split('_')
+    parts = segment_name.replace(".ndjson", "").split('_')
     assert len(parts) == 3
     assert parts[0] == "segment"
     assert 'T' in parts[1]  # Date with hour: 20251120T14
@@ -111,8 +122,11 @@ async def test_segment_naming_convention(temp_dir):
 @pytest.mark.asyncio
 async def test_no_data_loss_on_rotation(temp_dir):
     """Test that no messages are lost during rotation."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=10,
         flush_interval_seconds=0.5,
@@ -155,8 +169,11 @@ async def test_no_data_loss_on_rotation(temp_dir):
 @pytest.mark.asyncio
 async def test_segment_stats(temp_dir):
     """Test that stats include segment information."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=5,
         flush_interval_seconds=1.0,
@@ -173,14 +190,11 @@ async def test_segment_stats(temp_dir):
     await asyncio.sleep(2)
     
     stats = writer.get_stats()
-    assert "current_date_hour" in stats
-    assert "current_hour_counter" in stats
+    assert "current_segment" in stats
     assert "current_segment_size_mb" in stats
-    assert "current_segment_file" in stats
     assert "rotations" in stats
     
-    assert stats["current_hour_counter"] >= 1
-    assert stats["current_segment_file"] is not None
+    assert stats["current_segment"] is not None
     
     await writer.stop()
 
@@ -188,8 +202,11 @@ async def test_segment_stats(temp_dir):
 @pytest.mark.asyncio
 async def test_final_segment_moved_to_ready_on_shutdown(temp_dir):
     """Test that active segment is moved to ready/ on shutdown."""
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=5,
         flush_interval_seconds=1.0,
@@ -225,8 +242,11 @@ async def test_counter_resets_with_new_date_hour(temp_dir):
     from unittest.mock import patch
     from datetime import datetime, timezone
     
+    storage = LocalStorage(str(temp_dir))
     writer = LogWriter(
-        output_dir=str(temp_dir),
+        storage=storage,
+        active_path="active/test",
+        ready_path="ready/test",
         source_name="test",
         batch_size=10,
         flush_interval_seconds=0.5,
