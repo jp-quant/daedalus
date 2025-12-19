@@ -264,7 +264,7 @@ ingestion:
   partition_by:
     - "exchange"
     - "symbol"
-  enable_date_partition: true
+  enable_date_partition: false
 
 # =============================================================================
 # ETL LAYER SETTINGS

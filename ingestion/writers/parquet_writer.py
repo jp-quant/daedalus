@@ -165,7 +165,7 @@ class StreamingParquetWriter:
         compression: str = "zstd",
         compression_level: int = 3,
         partition_by: Optional[List[str]] = None,
-        enable_date_partition: bool = True,
+        enable_date_partition: bool = False,
     ):
         """
         Initialize streaming Parquet writer.

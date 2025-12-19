@@ -186,7 +186,7 @@ class IngestionConfig(BaseModel):
         )
     )
     enable_date_partition: bool = Field(
-        default=True,
+        default=False,
         description="Add date partition (year/month/day) for time-based organization"
     )
 
