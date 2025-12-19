@@ -148,7 +148,7 @@ class TestConfig:
         """Test FeatureConfig default values."""
         config = FeatureConfig()
         
-        assert config.depth_levels == 10
+        assert config.depth_levels == 20  # Zhang et al. 2019: 20 levels captures "walls"
         assert 60 in config.rolling_windows
         assert FeatureCategory.STRUCTURAL in config.categories
     
@@ -673,6 +673,282 @@ class TestTransformRegistry:
         # Check if orderbook_features is registered (from imports)
         # It should be registered when etl.transforms is imported
         assert registry.has_transform("orderbook_features")
+
+
+class TestFeatureConfigComplete:
+    """Tests for complete FeatureConfig parameters."""
+    
+    def test_feature_config_all_defaults(self):
+        """Test FeatureConfig has all expected default values."""
+        config = FeatureConfig()
+        
+        # Orderbook depth
+        assert config.depth_levels == 20
+        assert config.ofi_levels == 10
+        assert config.bands_bps == [5, 10, 25, 50, 100]
+        
+        # Rolling windows
+        assert config.rolling_windows == [5, 15, 60, 300, 900]
+        
+        # Bar durations
+        assert config.bar_interval_seconds == 60
+        assert config.bar_durations == [60, 300, 900, 3600]
+        
+        # OFI/MLOFI
+        assert config.ofi_decay_alpha == 0.5
+        
+        # Kyle's Lambda
+        assert config.kyle_lambda_window == 300
+        
+        # VPIN
+        assert config.enable_vpin == True
+        assert config.vpin_bucket_size == 1.0
+        assert config.vpin_window_buckets == 50
+        
+        # Spread regime
+        assert config.use_dynamic_spread_regime == True
+        assert config.spread_regime_window == 300
+        assert config.spread_tight_percentile == 0.2
+        assert config.spread_wide_percentile == 0.8
+        assert config.spread_tight_threshold_bps == 5.0
+        assert config.spread_wide_threshold_bps == 20.0
+        
+        # Stateful toggle
+        assert config.enable_stateful == True
+        
+        # Storage optimization
+        assert config.drop_raw_book_arrays == True  # Default drops raw arrays
+    
+    def test_feature_config_custom_values(self):
+        """Test FeatureConfig with custom values."""
+        config = FeatureConfig(
+            categories={FeatureCategory.STRUCTURAL, FeatureCategory.ADVANCED},
+            depth_levels=30,
+            ofi_levels=15,
+            bands_bps=[10, 20, 50],
+            rolling_windows=[10, 30, 120],
+            ofi_decay_alpha=0.7,
+            kyle_lambda_window=600,
+            enable_vpin=False,
+            vpin_bucket_size=2.5,
+            spread_tight_threshold_bps=3.0,
+        )
+        
+        assert config.depth_levels == 30
+        assert config.ofi_levels == 15
+        assert config.bands_bps == [10, 20, 50]
+        assert config.rolling_windows == [10, 30, 120]
+        assert config.ofi_decay_alpha == 0.7
+        assert config.kyle_lambda_window == 600
+        assert config.enable_vpin == False
+        assert config.vpin_bucket_size == 2.5
+        assert config.spread_tight_threshold_bps == 3.0
+    
+    def test_has_category(self):
+        """Test has_category method."""
+        config = FeatureConfig(
+            categories={FeatureCategory.STRUCTURAL, FeatureCategory.DYNAMIC}
+        )
+        
+        assert config.has_category(FeatureCategory.STRUCTURAL)
+        assert config.has_category(FeatureCategory.DYNAMIC)
+        assert not config.has_category(FeatureCategory.ROLLING)
+        assert not config.has_category(FeatureCategory.ADVANCED)
+
+
+class TestFilterSpecComplete:
+    """Tests for complete FilterSpec functionality."""
+    
+    def test_filter_spec_exact_match(self):
+        """Test FilterSpec with exact partition match."""
+        filter_spec = FilterSpec(
+            exchange="binanceus",
+            symbol="BTC/USDT",
+            year=2025,
+            month=12,
+            day=18,
+        )
+        
+        filters = filter_spec.to_partition_filters()
+        assert ("exchange", "=", "binanceus") in filters
+        assert ("symbol", "=", "BTC/USDT") in filters
+        assert ("year", "=", 2025) in filters
+        assert ("month", "=", 12) in filters
+        assert ("day", "=", 18) in filters
+    
+    def test_filter_spec_date_range(self):
+        """Test FilterSpec with date range."""
+        filter_spec = FilterSpec(
+            exchange="binanceus",
+            start_date="2025-12-01",
+            end_date="2025-12-15",
+        )
+        
+        # Date range should generate polars filter
+        expr = filter_spec.to_polars_filter()
+        assert expr is not None
+        
+        # Partition filters should not include date range
+        filters = filter_spec.to_partition_filters()
+        assert ("exchange", "=", "binanceus") in filters
+    
+    def test_filter_spec_polars_filter_exact(self):
+        """Test to_polars_filter with exact values."""
+        filter_spec = FilterSpec(
+            exchange="binanceus",
+            symbol="ETH/USDT",
+        )
+        
+        expr = filter_spec.to_polars_filter()
+        assert expr is not None
+        
+        # Test with actual data
+        df = pl.DataFrame({
+            "exchange": ["binanceus", "binanceus", "coinbase"],
+            "symbol": ["ETH/USDT", "BTC/USDT", "ETH/USDT"],
+            "value": [1, 2, 3],
+        })
+        
+        filtered = df.lazy().filter(expr).collect()
+        assert len(filtered) == 1
+        assert filtered["value"][0] == 1
+    
+    def test_filter_spec_empty(self):
+        """Test empty FilterSpec."""
+        filter_spec = FilterSpec()
+        
+        assert filter_spec.to_polars_filter() is None
+        assert filter_spec.to_partition_filters() == []
+
+
+class TestFeatureConfigBridge:
+    """Tests for config bridge methods (YAML → ETL framework)."""
+    
+    def test_to_feature_config_default(self):
+        """Test DaedalusConfig.to_feature_config with defaults."""
+        from config.config import DaedalusConfig, FeatureConfigOptions
+        
+        config = DaedalusConfig(
+            features=FeatureConfigOptions()
+        )
+        
+        feature_config = config.to_feature_config()
+        
+        # Check defaults mapped correctly
+        assert feature_config.depth_levels == 20
+        assert feature_config.ofi_levels == 10
+        assert feature_config.bands_bps == [5, 10, 25, 50, 100]
+        assert feature_config.rolling_windows == [5, 15, 60, 300, 900]
+        assert feature_config.ofi_decay_alpha == 0.5
+        assert feature_config.enable_vpin == True
+        assert feature_config.vpin_bucket_size == 1.0
+        assert feature_config.kyle_lambda_window == 300
+    
+    def test_to_feature_config_custom(self):
+        """Test DaedalusConfig.to_feature_config with custom values."""
+        from config.config import DaedalusConfig, FeatureConfigOptions
+        
+        config = DaedalusConfig(
+            features=FeatureConfigOptions(
+                categories=["structural", "advanced"],
+                depth_levels=30,
+                ofi_levels=15,
+                rolling_windows=[10, 60, 300],
+                ofi_decay_alpha=0.8,
+                enable_vpin=False,
+                vpin_bucket_size=2.0,
+            )
+        )
+        
+        feature_config = config.to_feature_config()
+        
+        assert feature_config.depth_levels == 30
+        assert feature_config.ofi_levels == 15
+        assert feature_config.rolling_windows == [10, 60, 300]
+        assert feature_config.ofi_decay_alpha == 0.8
+        assert feature_config.enable_vpin == False
+        assert feature_config.vpin_bucket_size == 2.0
+        
+        # Check categories
+        assert FeatureCategory.STRUCTURAL in feature_config.categories
+        assert FeatureCategory.ADVANCED in feature_config.categories
+        assert FeatureCategory.DYNAMIC not in feature_config.categories
+    
+    def test_to_stateful_processor_config(self):
+        """Test DaedalusConfig.to_stateful_processor_config."""
+        from config.config import DaedalusConfig, FeatureConfigOptions
+        
+        config = DaedalusConfig(
+            features=FeatureConfigOptions(
+                rolling_windows=[5, 30, 120],
+                ofi_levels=8,
+                ofi_decay_alpha=0.6,
+                kyle_lambda_window=600,
+                enable_vpin=True,
+                vpin_bucket_size=1.5,
+                vpin_window_buckets=40,
+            )
+        )
+        
+        processor_config = config.to_stateful_processor_config()
+        
+        assert processor_config.horizons == [5, 30, 120]
+        assert processor_config.ofi_levels == 8
+        assert processor_config.ofi_decay_alpha == 0.6
+        assert processor_config.kyle_lambda_window == 600
+        assert processor_config.enable_vpin == True
+        assert processor_config.vpin_bucket_volume == 1.5
+        assert processor_config.vpin_window_buckets == 40
+    
+    def test_to_state_config(self):
+        """Test DaedalusConfig.to_state_config."""
+        from config.config import DaedalusConfig, FeatureConfigOptions
+        
+        config = DaedalusConfig(
+            features=FeatureConfigOptions(
+                depth_levels=25,
+                rolling_windows=[5, 30, 120],
+                bar_durations=[60, 300, 600],
+                ofi_levels=12,
+                ofi_decay_alpha=0.4,
+                bands_bps=[5, 15, 30],
+                kyle_lambda_window=450,
+            )
+        )
+        
+        state_config = config.to_state_config()
+        
+        assert state_config.max_levels == 25
+        assert state_config.horizons == [5, 30, 120]
+        assert state_config.bar_durations == [60, 300, 600]
+        assert state_config.ofi_levels == 12
+        assert state_config.ofi_decay_alpha == 0.4
+        assert state_config.bands_bps == [5, 15, 30]
+        assert state_config.kyle_lambda_window == 450
+
+
+class TestFeatureCategoryEnum:
+    """Tests for FeatureCategory enum including aliases."""
+    
+    def test_bars_aggregates_alias(self):
+        """Test that AGGREGATES is an alias for BARS."""
+        assert FeatureCategory.BARS.value == "bars"
+        assert FeatureCategory.AGGREGATES.value == "bars"
+        assert FeatureCategory.BARS == FeatureCategory.AGGREGATES
+    
+    def test_all_categories(self):
+        """Test all FeatureCategory values exist."""
+        categories = [
+            FeatureCategory.STRUCTURAL,
+            FeatureCategory.DYNAMIC,
+            FeatureCategory.ROLLING,
+            FeatureCategory.BARS,
+            FeatureCategory.ADVANCED,
+        ]
+        
+        values = {"structural", "dynamic", "rolling", "bars", "advanced"}
+        for cat in categories:
+            assert cat.value in values
 
 
 if __name__ == "__main__":

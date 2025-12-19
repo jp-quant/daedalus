@@ -195,6 +195,16 @@ class FeatureConfig:
     Configuration for feature computation.
     
     Controls which feature categories are computed and their parameters.
+    This is the central configuration used by TransformExecutor and all
+    ETL transforms.
+    
+    Research References:
+        - Cont et al. (2014): OFI price impact
+        - Kyle & Obizhaeva (2016): Microstructure invariance
+        - Zhang et al. (2019): DeepLOB - 20 levels captures "walls"
+        - Xu et al. (2019): Multi-level OFI with decay
+        - Easley et al. (2012): VPIN for flow toxicity
+        - López de Prado (2018): Volume clocks
     """
     # Feature categories to compute
     categories: set[FeatureCategory] = field(default_factory=lambda: {
@@ -202,24 +212,60 @@ class FeatureConfig:
         FeatureCategory.DYNAMIC,
     })
     
-    # Orderbook depth parameters
-    depth_levels: int = 10  # Number of price levels to process
+    # ==========================================================================
+    # ORDERBOOK DEPTH PARAMETERS
+    # ==========================================================================
+    depth_levels: int = 20  # Number of price levels to process (Zhang: 20 captures "walls")
+    ofi_levels: int = 10    # Levels for multi-level OFI (Xu: 10 with decay)
+    bands_bps: list[int] = field(default_factory=lambda: [5, 10, 25, 50, 100])  # Liquidity bands
     
-    # Rolling window parameters
-    rolling_windows: list[int] = field(default_factory=lambda: [60, 300, 900])  # Seconds
+    # ==========================================================================
+    # ROLLING WINDOW PARAMETERS
+    # ==========================================================================
+    rolling_windows: list[int] = field(default_factory=lambda: [5, 15, 60, 300, 900])  # Seconds
     
-    # Bar aggregation parameters
+    # ==========================================================================
+    # BAR AGGREGATION PARAMETERS
+    # ==========================================================================
     bar_interval_seconds: int = 60
+    bar_durations: list[int] = field(default_factory=lambda: [60, 300, 900, 3600])
     
-    # Advanced feature parameters
-    vpin_bucket_size: int = 100  # Volume buckets for VPIN
+    # ==========================================================================
+    # OFI / MLOFI PARAMETERS
+    # ==========================================================================
+    ofi_decay_alpha: float = 0.5  # Exponential decay for MLOFI: w_i = exp(-alpha * i)
     
-    # OFI parameters
-    ofi_decay_alpha: float = 0.94  # Exponential decay for MLOFI
+    # ==========================================================================
+    # KYLE'S LAMBDA PARAMETERS
+    # ==========================================================================
+    kyle_lambda_window: int = 300  # Rolling window in seconds for price impact
     
-    # Spread regime thresholds (in basis points)
-    spread_tight_threshold_bps: float = 5.0
-    spread_wide_threshold_bps: float = 20.0
+    # ==========================================================================
+    # VPIN PARAMETERS
+    # ==========================================================================
+    enable_vpin: bool = True
+    vpin_bucket_size: float = 1.0  # Volume bucket size
+    vpin_window_buckets: int = 50  # Number of buckets in rolling window
+    
+    # ==========================================================================
+    # SPREAD REGIME PARAMETERS
+    # ==========================================================================
+    use_dynamic_spread_regime: bool = True
+    spread_regime_window: int = 300  # Seconds for percentile calculation
+    spread_tight_percentile: float = 0.2  # Bottom 20% = tight
+    spread_wide_percentile: float = 0.8   # Top 20% = wide
+    spread_tight_threshold_bps: float = 5.0   # Fallback static threshold
+    spread_wide_threshold_bps: float = 20.0   # Fallback static threshold
+    
+    # ==========================================================================
+    # STATEFUL FEATURE TOGGLES
+    # ==========================================================================
+    enable_stateful: bool = True  # Enable OFI, MLOFI, regime tracking, etc.
+    
+    # ==========================================================================
+    # STORAGE OPTIMIZATION
+    # ==========================================================================
+    drop_raw_book_arrays: bool = True  # Drop raw bids/asks arrays after extraction
     
     def has_category(self, category: FeatureCategory) -> bool:
         """Check if a feature category is enabled."""
@@ -229,30 +275,75 @@ class FeatureConfig:
 @dataclass
 class FilterSpec:
     """
-    Declarative filter specification.
+    Declarative filter specification for partition pruning.
     
-    Used to build partition pruning filters without string manipulation.
+    Supports both exact matches and date ranges. Use this to efficiently
+    filter large datasets at read time via partition pruning.
+    
+    Attributes:
+        exchange: Filter by exchange (exact match).
+        symbol: Filter by symbol (exact match).
+        year: Filter by year (exact match or use start_date/end_date).
+        month: Filter by month (exact match or use start_date/end_date).
+        day: Filter by day (exact match or use start_date/end_date).
+        start_date: Inclusive start date for range queries (YYYY-MM-DD string).
+        end_date: Inclusive end date for range queries (YYYY-MM-DD string).
+    
+    Example:
+        # Exact partition match
+        filter_spec = FilterSpec(exchange="binanceus", symbol="BTC/USDT", year=2025, month=12)
+        
+        # Date range (for multi-day batch processing)
+        filter_spec = FilterSpec(
+            exchange="binanceus",
+            start_date="2025-12-01",
+            end_date="2025-12-15",
+        )
+        
+        # Use with executor
+        result = executor.execute(transform, filter_spec=filter_spec)
     """
     exchange: Optional[str] = None
     symbol: Optional[str] = None
     year: Optional[int] = None
     month: Optional[int] = None
     day: Optional[int] = None
+    start_date: Optional[str] = None  # YYYY-MM-DD format
+    end_date: Optional[str] = None    # YYYY-MM-DD format
     
     def to_polars_filter(self) -> Optional[pl.Expr]:
-        """Convert to Polars filter expression."""
+        """
+        Convert to Polars filter expression.
+        
+        Returns:
+            Combined filter expression or None if no filters specified.
+        """
         conditions = []
         
         if self.exchange is not None:
             conditions.append(pl.col("exchange") == self.exchange)
         if self.symbol is not None:
             conditions.append(pl.col("symbol") == self.symbol)
-        if self.year is not None:
-            conditions.append(pl.col("year") == self.year)
-        if self.month is not None:
-            conditions.append(pl.col("month") == self.month)
-        if self.day is not None:
-            conditions.append(pl.col("day") == self.day)
+        
+        # Handle date range vs exact date filters
+        if self.start_date or self.end_date:
+            # Use date range filtering with capture_ts
+            if self.start_date:
+                from datetime import datetime
+                start_dt = datetime.strptime(self.start_date, "%Y-%m-%d")
+                conditions.append(pl.col("capture_ts") >= start_dt)
+            if self.end_date:
+                from datetime import datetime, timedelta
+                end_dt = datetime.strptime(self.end_date, "%Y-%m-%d") + timedelta(days=1)
+                conditions.append(pl.col("capture_ts") < end_dt)
+        else:
+            # Use exact year/month/day filters
+            if self.year is not None:
+                conditions.append(pl.col("year") == self.year)
+            if self.month is not None:
+                conditions.append(pl.col("month") == self.month)
+            if self.day is not None:
+                conditions.append(pl.col("day") == self.day)
         
         if not conditions:
             return None
@@ -263,7 +354,17 @@ class FilterSpec:
         return result
     
     def to_partition_filters(self) -> list[tuple[str, str, Any]]:
-        """Convert to partition filter tuples for PyArrow."""
+        """
+        Convert to partition filter tuples for PyArrow.
+        
+        Note: Date ranges are NOT pushed down to partition pruning
+        (they require timestamp column access). Use year/month/day
+        for partition-level pruning, or ensure your Parquet reader
+        supports predicate pushdown on capture_ts.
+        
+        Returns:
+            List of (column, operator, value) tuples.
+        """
         filters = []
         
         if self.exchange is not None:
@@ -299,7 +400,32 @@ class FilterSpec:
             result["month"] = self.month
         if self.day is not None:
             result["day"] = self.day
+        if self.start_date is not None:
+            result["start_date"] = self.start_date
+        if self.end_date is not None:
+            result["end_date"] = self.end_date
         return result
+    
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FilterSpec":
+        """
+        Create FilterSpec from dictionary.
+        
+        Args:
+            data: Dictionary with filter values.
+        
+        Returns:
+            FilterSpec instance.
+        """
+        return cls(
+            exchange=data.get("exchange"),
+            symbol=data.get("symbol"),
+            year=data.get("year"),
+            month=data.get("month"),
+            day=data.get("day"),
+            start_date=data.get("start_date"),
+            end_date=data.get("end_date"),
+        )
     
     def __repr__(self) -> str:
         """Human-readable representation."""

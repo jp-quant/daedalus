@@ -176,25 +176,62 @@ class IngestionConfig(BaseModel):
     # Parquet-specific options
     parquet_compression: str = Field(default="zstd", description="Parquet compression codec")
     parquet_compression_level: int = Field(default=3, description="Compression level (1-22 for zstd)")
+    # Partitioning options for raw data landing
+    partition_by: list[str] = Field(
+        default=["exchange", "symbol"],
+        description=(
+            "Columns to partition raw data by (Hive-style). "
+            "Default ['exchange', 'symbol'] creates paths like: "
+            "orderbook/exchange=binanceus/symbol=BTC~USDT/segment_*.parquet"
+        )
+    )
+    enable_date_partition: bool = Field(
+        default=True,
+        description="Add date partition (year/month/day) for time-based organization"
+    )
 
 
 class ChannelETLConfig(BaseModel):
-    """Per-channel ETL configuration."""
+    """
+    Per-channel ETL configuration.
+    
+    .. deprecated:: 2025.12
+        This class is deprecated. Use :class:`FeatureConfigOptions` instead for
+        unified feature configuration across all ETL pipelines.
+        
+        Migration guide:
+        - Move `processor_options` parameters to the `features:` section in config.yaml
+        - Use `config.to_feature_config()` to get FeatureConfig for TransformExecutor
+        - Use `config.to_stateful_processor_config()` for StatefulFeatureProcessor
+        - Use `config.to_state_config()` for streaming SymbolState
+    """
     enabled: bool = True
     partition_cols: Optional[list[str]] = None  # e.g., ["product_id", "date"]
     processor_options: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ETLConfig(BaseModel):
-    """ETL layer configuration."""
+    """
+    ETL layer configuration.
+    
+    .. deprecated:: 2025.12
+        The per-channel `processor_options` pattern is deprecated.
+        Use :class:`FeatureConfigOptions` (via `config.features`) instead for
+        unified feature configuration.
+        
+        The `state`, `compression`, and `delete_after_processing` options
+        remain valid for ETL orchestration settings.
+    """
     compression: str = "zstd"
     schedule_cron: Optional[str] = None  # e.g., "0 * * * *" for hourly
     delete_after_processing: bool = True  # Delete raw segments after ETL
     
-    # State management
+    # State management (still valid - used for checkpoint/resume)
     state: StateManagementConfig = Field(default_factory=StateManagementConfig)
     
     # Channel-specific configuration
+    # DEPRECATED: Use config.features instead for feature parameters
+    # These defaults are kept for backwards compatibility only
     channels: Dict[str, ChannelETLConfig] = Field(default_factory=lambda: {
         "ticker": ChannelETLConfig(
             partition_cols=["exchange", "symbol", "date"],
@@ -203,18 +240,13 @@ class ETLConfig(BaseModel):
         "orderbook": ChannelETLConfig(
             partition_cols=["exchange", "symbol", "date"],
             processor_options={
-                # Core feature extraction
+                # DEPRECATED: Use config.features instead
+                # These are kept for backwards compatibility only
                 "compute_features": True,
                 "max_levels": 20,
                 "bands_bps": [5, 10, 25, 50, 100],
-
-                # Rolling horizons (seconds)
                 "horizons": [5, 15, 60, 300, 900],
-
-                # Bar aggregation windows (seconds)
                 "bar_durations": [60, 300, 900, 3600],
-
-                # Stateful feature defaults (OFI/MLOFI/Regimes/Kyle/VPIN)
                 "enable_stateful": True,
                 "ofi_levels": 10,
                 "ofi_decay_alpha": 0.5,
@@ -236,6 +268,156 @@ class ETLConfig(BaseModel):
     })
 
 
+class FeatureConfigOptions(BaseModel):
+    """
+    Feature computation configuration (loaded from YAML).
+    
+    Maps to etl.core.config.FeatureConfig for the new ETL framework.
+    These settings control which features are computed and their parameters.
+    
+    This is the UNIFIED feature configuration that should be used by all
+    ETL scripts. It replaces the per-channel processor_options pattern.
+    
+    Research References:
+        - Cont et al. (2014): OFI price impact
+        - Kyle & Obizhaeva (2016): Microstructure invariance
+        - Zhang et al. (2019): DeepLOB - 20 levels captures "walls"
+        - Xu et al. (2019): Multi-level OFI with decay
+        - Easley et al. (2012): VPIN for flow toxicity
+        - López de Prado (2018): Volume clocks
+    """
+    # Feature categories to enable
+    # Options: structural, dynamic, rolling, bars, advanced
+    categories: list[str] = Field(
+        default=["structural", "dynamic", "rolling"],
+        description="Feature categories to compute. Options: structural, dynamic, rolling, bars, advanced"
+    )
+    
+    # ==========================================================================
+    # ORDERBOOK DEPTH PARAMETERS
+    # ==========================================================================
+    depth_levels: int = Field(
+        default=20,
+        description="Number of orderbook price levels to process (Zhang et al. 2019: 20 captures 'walls')"
+    )
+    
+    ofi_levels: int = Field(
+        default=10,
+        description="Number of levels for multi-level OFI calculation (Xu et al. 2019: 10 levels with decay)"
+    )
+    
+    bands_bps: list[int] = Field(
+        default=[5, 10, 25, 50, 100],
+        description="Liquidity bands in basis points for depth aggregation (wider for crypto volatility)"
+    )
+    
+    # ==========================================================================
+    # ROLLING WINDOW PARAMETERS
+    # ==========================================================================
+    rolling_windows: list[int] = Field(
+        default=[5, 15, 60, 300, 900],
+        description="Rolling window sizes in seconds [5s micro, 15s short, 60s standard, 5min medium, 15min trend]"
+    )
+    
+    # ==========================================================================
+    # BAR AGGREGATION PARAMETERS
+    # ==========================================================================
+    bar_interval_seconds: int = Field(
+        default=60,
+        description="Default bar interval in seconds (used if bar_durations not specified)"
+    )
+    bar_durations: list[int] = Field(
+        default=[60, 300, 900, 3600],
+        description="Bar durations in seconds [1min, 5min, 15min, 1hr] for gold-tier aggregation"
+    )
+    
+    # ==========================================================================
+    # OFI / MLOFI PARAMETERS (Cont 2014, Xu 2019)
+    # ==========================================================================
+    ofi_decay_alpha: float = Field(
+        default=0.5,
+        description="Exponential decay alpha for MLOFI level weighting: w_i = exp(-alpha * i)"
+    )
+    
+    # ==========================================================================
+    # KYLE'S LAMBDA PARAMETERS (Kyle & Obizhaeva 2016)
+    # ==========================================================================
+    kyle_lambda_window: int = Field(
+        default=300,
+        description="Rolling window in seconds for Kyle's Lambda (price impact) estimation"
+    )
+    
+    # ==========================================================================
+    # VPIN PARAMETERS (Easley et al. 2012)
+    # ==========================================================================
+    enable_vpin: bool = Field(
+        default=True,
+        description="Enable VPIN (Volume-Synchronized Probability of Informed Trading) calculation"
+    )
+    
+    vpin_bucket_size: float = Field(
+        default=1.0,
+        description="VPIN volume bucket size (normalize by typical trade size)"
+    )
+    
+    vpin_window_buckets: int = Field(
+        default=50,
+        description="Number of volume buckets in VPIN rolling window"
+    )
+    
+    # ==========================================================================
+    # SPREAD REGIME PARAMETERS
+    # ==========================================================================
+    use_dynamic_spread_regime: bool = Field(
+        default=True,
+        description="Use dynamic percentile-based spread regime detection"
+    )
+    
+    spread_regime_window: int = Field(
+        default=300,
+        description="Window in seconds for spread percentile calculation"
+    )
+    
+    spread_tight_percentile: float = Field(
+        default=0.2,
+        description="Percentile threshold for 'tight' spread regime (bottom 20%)"
+    )
+    
+    spread_wide_percentile: float = Field(
+        default=0.8,
+        description="Percentile threshold for 'wide' spread regime (top 20%)"
+    )
+    
+    spread_tight_threshold_bps: float = Field(
+        default=5.0,
+        description="Fallback static threshold: spread below this (bps) is 'tight'"
+    )
+    spread_wide_threshold_bps: float = Field(
+        default=20.0,
+        description="Fallback static threshold: spread above this (bps) is 'wide'"
+    )
+    
+    # ==========================================================================
+    # STATEFUL FEATURE TOGGLES
+    # ==========================================================================
+    enable_stateful: bool = Field(
+        default=True,
+        description="Enable stateful features (OFI, MLOFI, regime tracking, Kyle's Lambda)"
+    )
+    
+    # ==========================================================================
+    # STORAGE OPTIMIZATION
+    # ==========================================================================
+    drop_raw_book_arrays: bool = Field(
+        default=True,
+        description=(
+            "Drop raw bids/asks arrays after feature extraction. "
+            "Set to True (default) to reduce silver tier storage ~60-80%. "
+            "Set to False if downstream processes need the full orderbook arrays."
+        )
+    )
+
+
 class DaedalusConfig(BaseModel):
     """Root configuration for Daedalus."""
     # Data sources
@@ -251,9 +433,116 @@ class DaedalusConfig(BaseModel):
     # ETL settings
     etl: ETLConfig = Field(default_factory=ETLConfig)
     
+    # Feature computation settings (for new ETL framework)
+    features: FeatureConfigOptions = Field(default_factory=FeatureConfigOptions)
+    
     # Logging
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    def to_feature_config(self) -> "FeatureConfig":
+        """
+        Convert feature options to etl.core.config.FeatureConfig.
+        
+        This bridges the YAML config to the ETL framework's FeatureConfig.
+        
+        Returns:
+            FeatureConfig instance for use with TransformExecutor.
+        """
+        from etl.core.config import FeatureConfig
+        from etl.core.enums import FeatureCategory
+        
+        # Map string category names to enum values
+        category_map = {
+            "structural": FeatureCategory.STRUCTURAL,
+            "dynamic": FeatureCategory.DYNAMIC,
+            "rolling": FeatureCategory.ROLLING,
+            "bars": FeatureCategory.BARS,
+            "aggregates": FeatureCategory.BARS,  # Alias
+            "advanced": FeatureCategory.ADVANCED,
+        }
+        
+        categories = set()
+        for cat_name in self.features.categories:
+            if cat_name.lower() in category_map:
+                categories.add(category_map[cat_name.lower()])
+        
+        return FeatureConfig(
+            categories=categories,
+            depth_levels=self.features.depth_levels,
+            ofi_levels=self.features.ofi_levels,
+            bands_bps=self.features.bands_bps,
+            rolling_windows=self.features.rolling_windows,
+            bar_interval_seconds=self.features.bar_interval_seconds,
+            bar_durations=self.features.bar_durations,
+            ofi_decay_alpha=self.features.ofi_decay_alpha,
+            kyle_lambda_window=self.features.kyle_lambda_window,
+            enable_vpin=self.features.enable_vpin,
+            vpin_bucket_size=self.features.vpin_bucket_size,
+            vpin_window_buckets=self.features.vpin_window_buckets,
+            use_dynamic_spread_regime=self.features.use_dynamic_spread_regime,
+            spread_regime_window=self.features.spread_regime_window,
+            spread_tight_percentile=self.features.spread_tight_percentile,
+            spread_wide_percentile=self.features.spread_wide_percentile,
+            spread_tight_threshold_bps=self.features.spread_tight_threshold_bps,
+            spread_wide_threshold_bps=self.features.spread_wide_threshold_bps,
+            enable_stateful=self.features.enable_stateful,
+            drop_raw_book_arrays=self.features.drop_raw_book_arrays,
+        )
+    
+    def to_stateful_processor_config(self) -> "StatefulProcessorConfig":
+        """
+        Convert feature options to StatefulProcessorConfig for batch processing.
+        
+        This bridges the YAML config to the stateful feature processor.
+        
+        Returns:
+            StatefulProcessorConfig instance for use with StatefulFeatureProcessor.
+        """
+        from etl.features.stateful import StatefulProcessorConfig
+        
+        return StatefulProcessorConfig(
+            horizons=self.features.rolling_windows,
+            ofi_levels=self.features.ofi_levels,
+            ofi_decay_alpha=self.features.ofi_decay_alpha,
+            spread_regime_window=self.features.spread_regime_window,
+            spread_tight_percentile=self.features.spread_tight_percentile,
+            spread_wide_percentile=self.features.spread_wide_percentile,
+            use_dynamic_spread_regime=self.features.use_dynamic_spread_regime,
+            tight_spread_threshold=self.features.spread_tight_threshold_bps / 10000,  # bps to ratio
+            kyle_lambda_window=self.features.kyle_lambda_window,
+            enable_vpin=self.features.enable_vpin,
+            vpin_bucket_volume=self.features.vpin_bucket_size,
+            vpin_window_buckets=self.features.vpin_window_buckets,
+        )
+    
+    def to_state_config(self) -> "StateConfig":
+        """
+        Convert feature options to StateConfig for streaming processing.
+        
+        This bridges the YAML config to the streaming state processor.
+        
+        Returns:
+            StateConfig instance for use with SymbolState.
+        """
+        from etl.features.state import StateConfig
+        
+        return StateConfig(
+            horizons=self.features.rolling_windows,
+            bar_durations=self.features.bar_durations,
+            max_levels=self.features.depth_levels,
+            ofi_levels=self.features.ofi_levels,
+            ofi_decay_alpha=self.features.ofi_decay_alpha,
+            bands_bps=self.features.bands_bps,
+            use_dynamic_spread_regime=self.features.use_dynamic_spread_regime,
+            spread_regime_window=self.features.spread_regime_window,
+            spread_tight_percentile=self.features.spread_tight_percentile,
+            spread_wide_percentile=self.features.spread_wide_percentile,
+            tight_spread_threshold=self.features.spread_tight_threshold_bps / 10000,  # bps to ratio
+            kyle_lambda_window=self.features.kyle_lambda_window,
+            vpin_bucket_count=self.features.vpin_window_buckets,
+            vpin_window_buckets=self.features.vpin_window_buckets,
+        )
 
 
 def load_config(config_path: Optional[str] = None) -> DaedalusConfig:

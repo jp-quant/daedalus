@@ -116,18 +116,35 @@ class TransformExecutor:
         """
         Create executor from Daedalus configuration.
         
+        This factory method creates a properly configured TransformExecutor
+        from the main application configuration file.
+        
         Args:
-            config: DaedalusConfig instance
+            config: DaedalusConfig instance loaded from config.yaml
             
         Returns:
-            Configured TransformExecutor
+            Configured TransformExecutor ready for execution
+        
+        Example:
+            from config.config import load_config
+            from etl.core.executor import TransformExecutor
+            
+            config = load_config()
+            executor = TransformExecutor.from_config(config)
+            result = executor.execute(my_transform)
         """
+        # Build storage config from ETL input settings
         storage_config = StorageConfig(
             backend_type=StorageBackendType.LOCAL,
             base_path=config.storage.etl_storage_input.base_dir,
         )
         
-        feature_config = FeatureConfig()  # Could be enhanced from config
+        # Use the new to_feature_config() method if available
+        if hasattr(config, 'to_feature_config'):
+            feature_config = config.to_feature_config()
+        else:
+            # Fallback for older configs
+            feature_config = FeatureConfig()
         
         return cls(
             default_storage=storage_config,
@@ -394,7 +411,24 @@ class TransformExecutor:
         op: str,
         val: Any,
     ) -> pl.LazyFrame:
-        """Apply a single filter condition to LazyFrame."""
+        """
+        Apply a single filter condition to LazyFrame.
+        
+        Supported operators:
+            =, !=, >, >=, <, <=, in, between
+        
+        Args:
+            lf: LazyFrame to filter.
+            col: Column name to filter on.
+            op: Filter operator.
+            val: Filter value (or tuple for 'between').
+        
+        Returns:
+            Filtered LazyFrame.
+        
+        Raises:
+            ValueError: If operator is not supported.
+        """
         if op == "=":
             return lf.filter(pl.col(col) == val)
         elif op == "!=":
@@ -409,23 +443,13 @@ class TransformExecutor:
             return lf.filter(pl.col(col) <= val)
         elif op == "in":
             return lf.filter(pl.col(col).is_in(val))
+        elif op == "between":
+            # val should be (low, high) tuple
+            if not isinstance(val, tuple) or len(val) != 2:
+                raise ValueError("'between' operator requires (low, high) tuple")
+            return lf.filter((pl.col(col) >= val[0]) & (pl.col(col) <= val[1]))
         else:
             raise ValueError(f"Unsupported filter operator: {op}")
-        
-        # Read based on format
-        if input_config.format == DataFormat.PARQUET:
-            lf = self._read_parquet(
-                path=path,
-                storage=storage,
-                filters=input_config.filters,
-                columns=input_config.columns,
-            )
-        elif input_config.format == DataFormat.NDJSON:
-            lf = self._read_ndjson(path=path, storage=storage)
-        else:
-            raise ValueError(f"Unsupported input format: {input_config.format}")
-        
-        return lf
     
     def _read_parquet(
         self,

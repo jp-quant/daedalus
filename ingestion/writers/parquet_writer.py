@@ -137,12 +137,13 @@ class StreamingParquetWriter:
     - Batch writes to reduce I/O overhead
     - Size-based segment rotation (prevents unbounded growth)
     - Channel-based file separation (ticker, trades, orderbook)
+    - Hive-style partitioning by exchange/symbol/date
     - Active/ready directory segregation
     - Works with any StorageBackend
     
-    Directory structure:
-        {active_path}/{channel}/segment_*.parquet    # Being written
-        {ready_path}/{channel}/segment_*.parquet     # Ready for ETL
+    Directory structure (with partitioning):
+        {active_path}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/segment_*.parquet
+        {ready_path}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/segment_*.parquet
     
     Comparison vs NDJSON:
     - ~5-10x smaller with ZSTD compression
@@ -163,6 +164,8 @@ class StreamingParquetWriter:
         segment_max_mb: int = 50,
         compression: str = "zstd",
         compression_level: int = 3,
+        partition_by: Optional[List[str]] = None,
+        enable_date_partition: bool = True,
     ):
         """
         Initialize streaming Parquet writer.
@@ -178,6 +181,8 @@ class StreamingParquetWriter:
             segment_max_mb: Max segment size before rotation
             compression: Parquet compression (zstd, snappy, lz4)
             compression_level: Compression level (1-22 for zstd)
+            partition_by: Columns to partition by (e.g., ["exchange", "symbol"])
+            enable_date_partition: Add year/month/day partitions
         """
         self.storage = storage
         self.active_path = active_path
@@ -188,16 +193,19 @@ class StreamingParquetWriter:
         self.segment_max_bytes = segment_max_mb * 1024 * 1024
         self.compression = compression
         self.compression_level = compression_level
+        self.partition_by = partition_by or ["exchange", "symbol"]
+        self.enable_date_partition = enable_date_partition
         
         # Bounded queue for backpressure
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         
-        # Per-channel buffers and segment tracking
-        self._channel_buffers: Dict[str, deque] = {}
-        self._channel_segments: Dict[str, Dict[str, Any]] = {}
-        self._channel_sizes: Dict[str, int] = {}
+        # Per-partition buffers and segment tracking
+        # Key: (channel, exchange, symbol, date) tuple
+        self._partition_buffers: Dict[tuple, deque] = {}
+        self._partition_segments: Dict[tuple, Dict[str, Any]] = {}
+        self._partition_sizes: Dict[tuple, int] = {}
         
-        # Hour-based segment naming
+        # Hour-based segment naming per partition
         self.current_date_hour: str = ""
         self.hour_counters: Dict[str, int] = {}
         
@@ -216,7 +224,7 @@ class StreamingParquetWriter:
         self._writer_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
         
-        # Ensure directories exist
+        # Ensure base directories exist
         self.storage.mkdir(self.active_path)
         self.storage.mkdir(self.ready_path)
         
@@ -224,6 +232,7 @@ class StreamingParquetWriter:
             f"[StreamingParquetWriter] Initialized: source={source_name}, "
             f"compression={compression}:{compression_level}, segment_max_mb={segment_max_mb}"
         )
+        logger.info(f"[StreamingParquetWriter] Partitioning: {self.partition_by}, date_partition={enable_date_partition}")
     
     async def start(self):
         """Start the writer background task."""
@@ -289,10 +298,11 @@ class StreamingParquetWriter:
                         record = await asyncio.wait_for(
                             self.queue.get(), timeout=0.1
                         )
-                        channel = record.get("type", "unknown")
-                        if channel not in self._channel_buffers:
-                            self._channel_buffers[channel] = deque()
-                        self._channel_buffers[channel].append(record)
+                        # Get partition key for this record
+                        partition_key = self._get_partition_key(record)
+                        if partition_key not in self._partition_buffers:
+                            self._partition_buffers[partition_key] = deque()
+                        self._partition_buffers[partition_key].append(record)
                         drained += 1
                     except asyncio.TimeoutError:
                         break
@@ -303,12 +313,12 @@ class StreamingParquetWriter:
                 
                 any_buffer_full = any(
                     len(buf) >= self.batch_size 
-                    for buf in self._channel_buffers.values()
+                    for buf in self._partition_buffers.values()
                 )
                 
                 if any_buffer_full or time_to_flush:
                     await asyncio.get_event_loop().run_in_executor(
-                        None, self._flush_all_channels
+                        None, self._flush_all_partitions
                     )
                     last_flush_time = current_time
             
@@ -321,20 +331,65 @@ class StreamingParquetWriter:
         
         # Final flush
         await asyncio.get_event_loop().run_in_executor(
-            None, self._flush_all_channels
+            None, self._flush_all_partitions
         )
     
-    def _flush_all_channels(self):
-        """Flush all channel buffers to their respective Parquet files."""
-        for channel, buffer in list(self._channel_buffers.items()):
-            if buffer:
-                self._flush_channel(channel, buffer)
+    def _get_partition_key(self, record: Dict[str, Any]) -> tuple:
+        """
+        Extract partition key from record.
+        
+        Returns tuple: (channel, exchange, symbol, date_str)
+        """
+        channel = record.get("type", "unknown")
+        exchange = record.get("exchange", "unknown")
+        symbol = record.get("symbol", "unknown")
+        
+        # Sanitize symbol for filesystem (replace / with ~)
+        symbol = symbol.replace("/", "~")
+        
+        # Get date from capture_ts, timestamp, or current time
+        date_str = ""
+        if self.enable_date_partition:
+            capture_ts = record.get("capture_ts")
+            timestamp = record.get("timestamp")
+            
+            if capture_ts:
+                try:
+                    if isinstance(capture_ts, str):
+                        # Parse ISO format
+                        if capture_ts.endswith("Z"):
+                            capture_ts = capture_ts[:-1] + "+00:00"
+                        dt = datetime.fromisoformat(capture_ts)
+                    else:
+                        dt = capture_ts
+                    date_str = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    date_str = utc_now().strftime("%Y-%m-%d")
+            elif timestamp:
+                try:
+                    # Convert epoch ms to datetime
+                    ts_sec = timestamp / 1000 if timestamp > 1e12 else timestamp
+                    dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
+                    date_str = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    date_str = utc_now().strftime("%Y-%m-%d")
+            else:
+                date_str = utc_now().strftime("%Y-%m-%d")
+        
+        return (channel, exchange, symbol, date_str)
     
-    def _flush_channel(self, channel: str, buffer: deque):
-        """Flush a single channel buffer to Parquet."""
+    def _flush_all_partitions(self):
+        """Flush all partition buffers to their respective Parquet files."""
+        for partition_key, buffer in list(self._partition_buffers.items()):
+            if buffer:
+                self._flush_partition(partition_key, buffer)
+    
+    def _flush_partition(self, partition_key: tuple, buffer: deque):
+        """Flush a single partition buffer to Parquet."""
         if not buffer:
             return
         
+        channel, exchange, symbol, date_str = partition_key
         records = list(buffer)
         buffer.clear()
         
@@ -344,28 +399,28 @@ class StreamingParquetWriter:
             if table is None or table.num_rows == 0:
                 return
             
-            # Ensure segment is open
-            self._ensure_segment_open(channel)
+            # Ensure segment is open for this partition
+            self._ensure_segment_open(partition_key)
             
             # Write to segment
-            segment_info = self._channel_segments[channel]
+            segment_info = self._partition_segments[partition_key]
             writer = segment_info["writer"]
             writer.write_table(table)
             
             # Track size
             bytes_written = table.nbytes
-            self._channel_sizes[channel] = self._channel_sizes.get(channel, 0) + bytes_written
+            self._partition_sizes[partition_key] = self._partition_sizes.get(partition_key, 0) + bytes_written
             self.stats["bytes_written"] += bytes_written
             self.stats["messages_written"] += len(records)
             self.stats["flushes"] += 1
             
             # Check for rotation
-            if self._channel_sizes[channel] >= self.segment_max_bytes:
-                self._rotate_segment(channel)
+            if self._partition_sizes[partition_key] >= self.segment_max_bytes:
+                self._rotate_segment(partition_key)
         
         except Exception as e:
             self.stats["errors"] += 1
-            logger.error(f"[StreamingParquetWriter] Error flushing {channel}: {e}")
+            logger.error(f"[StreamingParquetWriter] Error flushing {partition_key}: {e}")
     
     def _records_to_table(self, channel: str, records: List[Dict]) -> Optional[pa.Table]:
         """Convert raw records to PyArrow table for the given channel."""
@@ -494,22 +549,50 @@ class StreamingParquetWriter:
         except Exception:
             return None
     
-    def _ensure_segment_open(self, channel: str):
-        """Ensure a segment file is open for the channel."""
+    def _ensure_segment_open(self, partition_key: tuple):
+        """Ensure a segment file is open for the partition."""
         current_hour = utc_now().strftime("%Y%m%dT%H")
         
         # Check if we need a new segment (hour changed or no segment)
-        if channel not in self._channel_segments or current_hour != self.current_date_hour:
-            if channel in self._channel_segments:
-                self._rotate_segment(channel)
+        if partition_key not in self._partition_segments or current_hour != self.current_date_hour:
+            if partition_key in self._partition_segments:
+                self._rotate_segment(partition_key)
             
             self.current_date_hour = current_hour
-            self._open_new_segment(channel)
+            self._open_new_segment(partition_key)
     
-    def _open_new_segment(self, channel: str):
-        """Open a new segment file for the channel."""
-        # Get counter for this hour/channel
-        counter_key = f"{self.current_date_hour}_{channel}"
+    def _build_partition_path(self, base_path: str, partition_key: tuple) -> str:
+        """
+        Build Hive-style partition path.
+        
+        Example: base/orderbook/exchange=binanceus/symbol=BTC~USDT/year=2025/month=12/day=19/
+        """
+        channel, exchange, symbol, date_str = partition_key
+        
+        # Start with channel
+        path = self.storage.join_path(base_path, channel)
+        
+        # Add partition columns
+        if "exchange" in self.partition_by:
+            path = self.storage.join_path(path, f"exchange={exchange}")
+        if "symbol" in self.partition_by:
+            path = self.storage.join_path(path, f"symbol={symbol}")
+        
+        # Add date partitions if enabled
+        if self.enable_date_partition and date_str:
+            year, month, day = date_str.split("-")
+            path = self.storage.join_path(path, f"year={year}")
+            path = self.storage.join_path(path, f"month={int(month)}")
+            path = self.storage.join_path(path, f"day={int(day)}")
+        
+        return path
+    
+    def _open_new_segment(self, partition_key: tuple):
+        """Open a new segment file for the partition."""
+        channel = partition_key[0]
+        
+        # Get counter for this hour/partition
+        counter_key = f"{self.current_date_hour}_{channel}_{partition_key[1]}_{partition_key[2]}"
         if counter_key not in self.hour_counters:
             self.hour_counters[counter_key] = 0
         self.hour_counters[counter_key] += 1
@@ -518,11 +601,11 @@ class StreamingParquetWriter:
         # Create segment name
         segment_name = f"segment_{self.current_date_hour}_{counter:05d}.parquet"
         
-        # Channel subdirectory
-        channel_path = self.storage.join_path(self.active_path, channel)
-        self.storage.mkdir(channel_path)
+        # Build partition path
+        partition_path = self._build_partition_path(self.active_path, partition_key)
+        self.storage.mkdir(partition_path)
         
-        segment_path = self.storage.join_path(channel_path, segment_name)
+        segment_path = self.storage.join_path(partition_path, segment_name)
         
         # Get schema for channel
         schema = CHANNEL_SCHEMAS.get(channel, _get_generic_schema())
@@ -545,46 +628,47 @@ class StreamingParquetWriter:
                 compression=self.compression,
                 compression_level=self.compression_level,
             )
-            self._channel_segments[channel] = {
+            self._partition_segments[partition_key] = {
                 "writer": writer,
                 "buffer": buffer,
                 "path": segment_path,
                 "name": segment_name,
+                "partition_key": partition_key,
             }
-            self._channel_sizes[channel] = 0
+            self._partition_sizes[partition_key] = 0
             return
         
-        self._channel_segments[channel] = {
+        self._partition_segments[partition_key] = {
             "writer": writer,
             "path": segment_path,
             "name": segment_name,
+            "partition_key": partition_key,
         }
-        self._channel_sizes[channel] = 0
+        self._partition_sizes[partition_key] = 0
         
         logger.debug(f"[StreamingParquetWriter] Opened segment: {segment_path}")
     
-    def _rotate_segment(self, channel: str):
+    def _rotate_segment(self, partition_key: tuple):
         """Close current segment and move to ready directory."""
-        if channel not in self._channel_segments:
+        if partition_key not in self._partition_segments:
             return
         
-        segment_info = self._channel_segments.pop(channel)
+        segment_info = self._partition_segments.pop(partition_key)
         writer = segment_info["writer"]
         
         try:
             # Close writer first
             writer.close()
-            logger.debug(f"[StreamingParquetWriter] Closed writer for {channel}")
+            logger.debug(f"[StreamingParquetWriter] Closed writer for {partition_key}")
             
-            # Move from active to ready
-            active_path = segment_info["path"]
-            ready_channel_path = self.storage.join_path(self.ready_path, channel)
-            self.storage.mkdir(ready_channel_path)
-            ready_path = self.storage.join_path(ready_channel_path, segment_info["name"])
+            # Build ready path with same partition structure
+            ready_partition_path = self._build_partition_path(self.ready_path, partition_key)
+            self.storage.mkdir(ready_partition_path)
+            ready_path = self.storage.join_path(ready_partition_path, segment_info["name"])
             
             if self.storage.backend_type == "local":
                 # Ensure paths are absolute for move operation
-                active_full = self.storage.get_full_path(active_path)
+                active_full = self.storage.get_full_path(segment_info["path"])
                 ready_full = self.storage.get_full_path(ready_path)
                 
                 # Use Python's shutil for reliable file move
@@ -596,26 +680,28 @@ class StreamingParquetWriter:
                 buffer = segment_info.get("buffer")
                 if buffer:
                     buffer.seek(0)
-                    self.storage.write_bytes(ready_path, buffer.read())
+                    self.storage.write_bytes(buffer.read(), ready_path)
             
             self.stats["rotations"] += 1
-            size_mb = self._channel_sizes.get(channel, 0) / 1024 / 1024
-            logger.info(f"[StreamingParquetWriter] Rotated {channel}: {segment_info['name']} ({size_mb:.1f} MB) -> ready/")
+            size_mb = self._partition_sizes.get(partition_key, 0) / 1024 / 1024
+            channel = partition_key[0]
+            logger.info(f"[StreamingParquetWriter] Rotated {channel}/{partition_key[1]}/{partition_key[2]}: "
+                       f"{segment_info['name']} ({size_mb:.1f} MB) -> ready/")
         
         except Exception as e:
-            logger.error(f"[StreamingParquetWriter] Error rotating {channel}: {e}", exc_info=True)
+            logger.error(f"[StreamingParquetWriter] Error rotating {partition_key}: {e}", exc_info=True)
         
-        self._channel_sizes[channel] = 0
+        self._partition_sizes[partition_key] = 0
     
     def _close_all_segments(self):
         """Close and move all open segments to ready."""
-        for channel in list(self._channel_segments.keys()):
-            self._rotate_segment(channel)
+        for partition_key in list(self._partition_segments.keys()):
+            self._rotate_segment(partition_key)
     
     def get_stats(self) -> dict:
         """Get writer statistics."""
         return {
             **self.stats,
             "queue_size": self.queue.qsize(),
-            "open_segments": list(self._channel_segments.keys()),
+            "open_partitions": len(self._partition_segments),
         }

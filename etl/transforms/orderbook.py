@@ -188,6 +188,17 @@ class OrderbookFeatureTransform(StatefulTransform):
             pl.col(time_col).dt.day().alias("day"),
         ])
         
+        # Step 5: Optionally drop raw bid/ask arrays to reduce storage
+        # Default is True - drops raw arrays since structural features are extracted
+        if feature_config.drop_raw_book_arrays:
+            cols_to_drop = [
+                col for col in ["bids", "asks"] 
+                if col in silver_lf.collect_schema().names()
+            ]
+            if cols_to_drop:
+                logger.info(f"Dropping raw orderbook arrays: {cols_to_drop}")
+                silver_lf = silver_lf.drop(cols_to_drop)
+        
         # Return with output key from config
         output_key = list(self.config.outputs.keys())[0]
         return {output_key: silver_lf}

@@ -1,6 +1,8 @@
 # ETL Module Refactor Design
 
-## Implementation Status: COMPLETED
+## Implementation Status: COMPLETED ✅
+
+**Last Updated**: December 18, 2025
 
 This document describes the ETL refactor design and its implementation status.
 
@@ -11,10 +13,16 @@ This document describes the ETL refactor design and its implementation status.
 ### What Was Done
 
 1. **Created `etl/core/`** - New ETL framework foundation
-   - `enums.py` - Type-safe enums (StorageBackendType, DataFormat, WriteMode, etc.)
-   - `config.py` - Declarative I/O config (InputConfig, OutputConfig, TransformConfig)
+   - `enums.py` - Type-safe enums (StorageBackendType, DataFormat, WriteMode, FeatureCategory, etc.)
+     - Added `AGGREGATES = "bars"` alias to FeatureCategory for semantic clarity
+   - `config.py` - Declarative I/O config (InputConfig, OutputConfig, TransformConfig, FilterSpec, FeatureConfig)
+     - Enhanced FilterSpec with `start_date`/`end_date` for date range queries
+     - Added `from_dict()` factory method to FilterSpec
    - `base.py` - BaseTransform, StatefulTransform, TransformContext
    - `executor.py` - TransformExecutor for running transforms
+     - Removed duplicate dead code (lines 413-427)
+     - Enhanced `_apply_filter()` with `between` operator for date ranges
+     - Added `from_config()` factory method for YAML integration
    - `registry.py` - Transform registry and @register_transform decorator
 
 2. **Created `etl/utils/`** - Parquet utilities
@@ -32,10 +40,21 @@ This document describes the ETL refactor design and its implementation status.
 
 4. **Created `etl/transforms/`** - Transform implementations
    - `orderbook.py` - OrderbookFeatureTransform (Bronze → Silver)
+   - `trades.py` - TradesFeatureTransform (Bronze → Silver)
+   - `ticker.py` - TickerFeatureTransform (Bronze → Silver)
+   - `bars.py` - BarAggregationTransform (Silver → Gold)
 
 5. **Created `etl/legacy/`** - Archived old code
    - Moved: orchestrators/, parsers/, processors/, readers/, writers/, job.py
    - **NOTHING should import from legacy** - preserved for reference only
+
+6. **Updated `config/config.py`** - Configuration bridge
+   - Added `FeatureConfigOptions` dataclass for YAML-based feature config
+   - Added `to_feature_config()` method to DaedalusConfig for ETL integration
+
+7. **Updated `config/config.examples.yaml`** - Comprehensive feature config
+   - Added `features:` section with all parameters
+   - Research references (Cont, Kyle, Zhang, Xu, Easley) in comments
 
 ---
 

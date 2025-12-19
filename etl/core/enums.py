@@ -155,12 +155,23 @@ class FeatureCategory(str, Enum):
     """
     Categories of features for orderbook processing.
     Used for selective feature computation.
+    
+    Categories:
+        STRUCTURAL: Static per-snapshot features (depth, spread, imbalance)
+        DYNAMIC: Delta-based features requiring previous state (OFI, returns)
+        ROLLING: Time-windowed statistics (realized vol, mean spread)
+        BARS: Aggregated time bars (OHLCV)
+        ADVANCED: Complex features (VPIN, Kyle's Lambda)
+        AGGREGATES: Alias for BARS (for clarity in gold tier)
     """
-    STRUCTURAL = "structural"      # Static per-snapshot features
-    DYNAMIC = "dynamic"            # Delta-based features (OFI, returns)
-    ROLLING = "rolling"            # Time-windowed statistics
-    BARS = "bars"                  # Aggregated time bars
-    ADVANCED = "advanced"          # VPIN, Kyle's Lambda, etc.
+    STRUCTURAL = "structural"
+    DYNAMIC = "dynamic"
+    ROLLING = "rolling"
+    BARS = "bars"
+    ADVANCED = "advanced"
+    
+    # Alias for consistency with medallion architecture naming
+    AGGREGATES = "bars"
     
     def __str__(self) -> str:
         return self.value

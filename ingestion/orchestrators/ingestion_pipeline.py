@@ -82,6 +82,8 @@ class IngestionPipeline:
                 segment_max_mb=self.config.ingestion.segment_max_mb,
                 compression=self.config.ingestion.parquet_compression,
                 compression_level=self.config.ingestion.parquet_compression_level,
+                partition_by=self.config.ingestion.partition_by,
+                enable_date_partition=self.config.ingestion.enable_date_partition,
             )
         else:
             return LogWriter(

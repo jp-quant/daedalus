@@ -60,18 +60,18 @@ storage:
         max_pool_connections: 50  # boto3 connection pool (increase if max_workers > 10)
     
     # Sync options
-    compact_before_upload: true     # Compact small parquet files before upload
+    compact_before_upload: false     # Compact small parquet files before upload
     delete_after_transfer: true     # Delete local files after successful upload  
     target_file_size_mb: 100        # Target file size for compaction
-    max_workers: 5                  # Parallel upload threads
+    max_workers: 42                  # Parallel upload threads
     interval_seconds: 300           # Seconds between syncs in continuous mode
     
     # Specific paths to sync (empty = sync all processed data)
-    paths: []
-    # paths:
-    #   - "processed/ccxt/ticker/"
-    #   - "processed/ccxt/trades/"
-    #   - "processed/coinbase/ticker/"
+    # paths: []
+    paths:
+      - "raw/ready/ccxt/ticker/"
+      - "raw/ready/ccxt/orderbook/"
+      - "raw/ready/ccxt/trades/"
 
 
   # ============================================================================
@@ -197,97 +197,6 @@ coinbase:
     - "DOGE-USD"
     - "LINK-USD"
     - "ADA-USD"
-    - "SUI-USD"
-    - "HBAR-USD"
-    - "STRK-USD"
-    - "ICP-USD"
-    - "FARTCOIN-USD"
-    - "DASH-USD"
-    - "LTC-USD"
-    - "FET-USD"
-    - "AVAX-USD"
-    - "TAO-USD"
-    - "ZORA-USD"
-    - "XLM-USD"
-    - "UNI-USD"
-    - "AERO-USD"
-    - "PENGU-USD"
-    - "BONK-USD"
-    - "PUMP-USD"
-    - "NEAR-USD"
-    - "NMR-USD"
-    - "FIL-USD"
-    - "BCH-USD"
-    - "USELESS-USD"
-    - "SEI-USD"
-    - "ONDO-USD"
-    - "AAVE-USD"
-    - "PEPE-USD"
-    - "APT-USD"
-    - "HFT-USD"
-    - "SYRUP-USD"
-    - "DOT-USD"
-    - "ARB-USD"
-    - "ZEN-USD"
-    - "WLFI-USD"
-    - "CRV-USD"
-    - "GIGA-USD"
-    - "ATOM-USD"
-    - "CTSI-USD"
-    - "TOSHI-USD"
-    - "LRC-USD"
-    - "CBETH-USD"
-    - "RENDER-USD"
-    - "TIA-USD"
-    - "SPX-USD"
-    - "XAN-USD"
-    - "INJ-USD"
-    - "XCN-USD"
-    - "ALLO-USD"
-    - "WIF-USD"
-    - "ZK-USD"
-    - "CRO-USD"
-    - "AVNT-USD"
-    - "JASMY-USD"
-    - "ASTER-USD"
-    - "SHIB-USD"
-    - "ALGO-USD"
-    - "BNB-USD"
-    - "CLANKER-USD"
-    - "WLD-USD"
-    - "SAPIEN-USD"
-    - "POPCAT-USD"
-    - "ENA-USD"
-    - "A8-USD"
-    - "MOODENG-USD"
-    - "POL-USD"
-    - "VET-USD"
-    - "TRUMP-USD"
-    - "ZRO-USD"
-    - "OP-USD"
-    - "ETC-USD"
-    - "QNT-USD"
-    - "IP-USD"
-    - "PAXG-USD"
-    - "CLV-USD"
-    - "PRCL-USD"
-    - "EDGE-USD"
-    - "LDO-USD"
-    - "CORECHAIN-USD"
-    - "FORT-USD"
-    - "REZ-USD"
-    - "COTI-USD"
-    - "IMX-USD"
-    - "PENDLE-USD"
-    - "MORPHO-USD"
-    - "KTA-USD"
-    - "MOG-USD"
-    - "KARRAT-USD"
-    - "TRB-USD"
-    - "HONEY-USD"
-    - "MET-USD"
-    - "PYR-USD"
-    - "ATH-USD"
   channels:
     - "ticker"
     - "level2"
@@ -329,6 +238,33 @@ ingestion:
   max_reconnect_attempts: 100000   # Max reconnect attempts
   reconnect_delay: 5.0             # Seconds between reconnect attempts
   segment_max_mb: 100              # Rotate segment after N MB
+  
+  # Parquet raw format options (when raw_format: "parquet")
+  raw_format: "parquet"                       # "ndjson" or "parquet"
+  parquet_compression: "zstd"                 # Compression for raw parquet (snappy, gzip, zstd)
+  parquet_compression_level: 1                # Compression level (1=fast, 9=max)
+  
+  # ===========================================================================
+  # PARTITIONING CONFIGURATION
+  # ===========================================================================
+  # Raw data is partitioned using Hive-style directory structure for efficient 
+  # downstream ETL processing. This allows ETL to read only relevant partitions
+  # instead of scanning all data.
+  #
+  # Example structure with full partitioning:
+  #   raw/ready/ccxt/orderbook/exchange=binanceus/symbol=BTC~USDT/year=2025/month=6/day=19/
+  #
+  # partition_by options: ["exchange", "symbol"] (default)
+  #   - exchange: Partition by exchange name (binanceus, coinbase, etc.)
+  #   - symbol: Partition by trading pair (BTC~USDT, ETH~USDT, etc.)
+  #
+  # enable_date_partition: true (default)
+  #   - Adds year/month/day partitions for time-based filtering
+  
+  partition_by:
+    - "exchange"
+    - "symbol"
+  enable_date_partition: true
 
 # =============================================================================
 # ETL LAYER SETTINGS
@@ -395,6 +331,131 @@ etl:
         - "symbol"
         - "date"
       processor_options: {}
+
+# =============================================================================
+# FEATURE COMPUTATION CONFIGURATION (New ETL Framework)
+# =============================================================================
+# These settings control the etl.core.config.FeatureConfig used by TransformExecutor.
+# They are research-optimized defaults based on academic literature.
+#
+# USE THIS SECTION for all ETL feature configuration. The etl.channels.*.processor_options
+# section above is being deprecated in favor of this unified configuration.
+#
+# References:
+#   - Cont et al. (2014): OFI price impact
+#   - Kyle & Obizhaeva (2016): Microstructure invariance
+#   - López de Prado (2018): Volume clocks
+#   - Zhang et al. (2019): DeepLOB (20 levels captures "walls")
+#   - Xu et al. (2019): Multi-level OFI with decay
+#   - Easley et al. (2012): VPIN for flow toxicity
+
+features:
+  # ==========================================================================
+  # FEATURE CATEGORIES
+  # ==========================================================================
+  # Options: structural, dynamic, rolling, bars, advanced
+  categories:
+    - "structural"   # Static per-snapshot: depth, spread, imbalance, microprice
+    - "dynamic"      # State-dependent: OFI, MLOFI, log returns, velocity
+    - "rolling"      # Time-windowed: realized vol, rolling OFI, regime stats
+    # - "bars"       # Enable for gold-tier bar aggregation
+    - "advanced"   # Enable for VPIN, Kyle's Lambda
+
+  # ==========================================================================
+  # ORDERBOOK DEPTH PARAMETERS
+  # ==========================================================================
+  # Zhang et al. (2019): 20 levels captures institutional "walls" and hidden liquidity
+  depth_levels: 20
+  
+  # Xu et al. (2019): Multi-level OFI with 10 levels reduces forecast error 15-70%
+  ofi_levels: 10
+  
+  # Liquidity bands in basis points for depth aggregation
+  # Wider bands [5, 10, 25, 50, 100] recommended for crypto volatility
+  bands_bps:
+    - 5      # Tight spread band
+    - 10     # Near-spread
+    - 25     # Quarter-percent
+    - 50     # Half-percent
+    - 100    # 1% from mid
+
+  # ==========================================================================
+  # ROLLING WINDOW PARAMETERS
+  # ==========================================================================
+  # Multi-scale windows for mid-frequency (5s to 4h) trading
+  rolling_windows:
+    - 5      # 5 second micro-trends
+    - 15     # 15 second short-term
+    - 60     # 1 minute standard
+    - 300    # 5 minute medium-term (captures institutional flow patterns)
+    - 900    # 15 minute trend detection
+
+  # ==========================================================================
+  # BAR AGGREGATION PARAMETERS
+  # ==========================================================================
+  # Skip sub-minute bars (redundant with HF @ 1s emission)
+  bar_interval_seconds: 60
+  bar_durations:
+    - 60     # 1 minute
+    - 300    # 5 minute
+    - 900    # 15 minute
+    - 3600   # 1 hour
+
+  # ==========================================================================
+  # OFI / MLOFI PARAMETERS (Cont 2014, Xu 2019)
+  # ==========================================================================
+  # Exponential decay alpha for MLOFI level weighting: w_i = exp(-alpha * i)
+  # Higher alpha = more focus on L1, lower = more uniform across levels
+  ofi_decay_alpha: 0.5
+
+  # ==========================================================================
+  # KYLE'S LAMBDA PARAMETERS (Kyle & Obizhaeva 2016)
+  # ==========================================================================
+  # Rolling window for price impact estimation
+  kyle_lambda_window: 300  # 5 minute window
+
+  # ==========================================================================
+  # VPIN PARAMETERS (Easley et al. 2012)
+  # ==========================================================================
+  # Enable VPIN (Volume-Synchronized Probability of Informed Trading)
+  enable_vpin: true
+  
+  # Volume bucket size (normalize by typical trade size)
+  vpin_bucket_size: 1.0
+  
+  # Rolling window in volume buckets
+  vpin_window_buckets: 50
+
+  # ==========================================================================
+  # SPREAD REGIME PARAMETERS
+  # ==========================================================================
+  # Dynamic percentile-based spread regime detection
+  use_dynamic_spread_regime: true
+  
+  # Window for spread percentile calculation
+  spread_regime_window: 300  # 5 minute window
+  
+  # Percentile thresholds for regime classification
+  spread_tight_percentile: 0.2   # Bottom 20% = tight spread
+  spread_wide_percentile: 0.8    # Top 20% = wide spread
+  
+  # Fallback static thresholds (used if use_dynamic_spread_regime: false)
+  spread_tight_threshold_bps: 5.0    # Below this = tight spread
+  spread_wide_threshold_bps: 20.0    # Above this = wide spread
+
+  # ==========================================================================
+  # STATEFUL FEATURE TOGGLES
+  # ==========================================================================
+  # Enable stateful features (OFI, MLOFI, regime tracking, Kyle's Lambda)
+  enable_stateful: true
+
+  # ==========================================================================
+  # STORAGE OPTIMIZATION
+  # ==========================================================================
+  # Drop raw bids/asks arrays after structural feature extraction.
+  # Default: true - reduces silver tier storage by ~60-80%
+  # Set to false if downstream processes need the full orderbook arrays.
+  drop_raw_book_arrays: true
 
 # =============================================================================
 # LOGGING

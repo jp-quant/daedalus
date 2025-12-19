@@ -165,42 +165,106 @@ Daedalus follows a **Medallion Architecture** (Bronze → Silver → Gold) that 
 
 ## 🔧 ETL Framework
 
-Daedalus has two ETL approaches:
+Daedalus provides a **declarative, config-driven ETL framework** built on Polars for efficient market data transformation.
 
-### Option 1: Modular Framework (recommended)
-- Uses `etl/core/`, `etl/transforms/`, `etl/features/`
-- Batch runners in `scripts/etl/`:
-  - `run_orderbook_features.py` (supports `--trades` to compute TFI correctly)
-  - `run_trades_features.py` (with bar aggregation support)
-  - `run_ticker_features.py` (with optional rolling stats)
-  - `run_watcher.py` for continuous processing of `data/raw/ready/*`
-- **State Management**: `etl/utils/state_manager.py` provides:
-  - Automatic checkpoint on SIGINT/SIGTERM (graceful shutdown)
-  - Periodic background checkpointing (configurable interval)
-  - State file rotation (keeps N recent backups)
-- Checkpoint/state files default under `storage.paths.state_dir` (default: `data/temp/state/`)
-- **Tier naming**: Output folder names configurable via `storage.paths.tier_*`:
-  - `tier_raw`: Bronze layer (default: "bronze")
-  - `tier_features`: Silver layer (default: "silver")
-  - `tier_aggregates`: Gold layer (default: "gold")
+### Core Architecture
 
-### Option 2: Legacy Pipeline (compat)
-- Older monolithic runners and pipeline code exist for compatibility, but the recommended path is the modular framework under `scripts/etl/`.
-- Legacy files archived in `etl/features/archived/` for reference.
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     TransformExecutor (Orchestrator)                    │
+│  etl/core/executor.py                                                   │
+│  - Resolves inputs with FilterSpec partition pruning                    │
+│  - Executes transform logic                                             │
+│  - Writes Hive-partitioned Parquet outputs                              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    transform.transform(inputs, context)
+                                    │
+┌───────────────────────────────────▼─────────────────────────────────────┐
+│                     Transform Implementations                           │
+│  etl/transforms/                                                        │
+│  ├── trades.py      → TradesFeatureTransform (direction, returns)       │
+│  ├── ticker.py      → TickerFeatureTransform (mid, spread)              │
+│  ├── orderbook.py   → OrderbookFeatureTransform (60+ features)          │
+│  └── bars.py        → BarAggregationTransform (OHLCV aggregates)        │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### ETL Scripts
+
+| Script | Input Tier | Output Tier | Description |
+|--------|------------|-------------|-------------|
+| `run_trades_features.py` | Bronze | Silver | Trade direction, dollar volume, log returns |
+| `run_ticker_features.py` | Bronze | Silver | Mid price, spread, derived metrics |
+| `run_orderbook_features.py` | Bronze | Silver | 60+ microstructure features |
+| `run_bars.py` | Silver | Gold | Time bar aggregations (1m, 5m, 15m, 1h) |
+| `run_watcher.py` | Bronze | Silver | Continuous processing of `data/raw/ready/*` |
+
+### Quick Usage
+
+```bash
+# Feature engineering (Bronze → Silver)
+python -m scripts.etl.run_trades_features --limit 10000
+python -m scripts.etl.run_orderbook_features --exchange binanceus --symbol BTC/USDT
+python -m scripts.etl.run_ticker_features --dry-run
+
+# Bar aggregation (Silver → Gold)
+python -m scripts.etl.run_bars --channel trades --output data/processed
+
+# Continuous processing
+python -m scripts.etl.run_watcher --poll-interval 30
+```
+
+### Key Components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `TransformExecutor` | `etl/core/executor.py` | Central orchestrator for I/O and execution |
+| `BaseTransform` | `etl/core/base.py` | Abstract base class for transforms |
+| `FilterSpec` | `etl/core/config.py` | Declarative partition filtering (exact match or date range) |
+| `FeatureConfig` | `etl/core/config.py` | Feature computation parameters |
+| `TransformRegistry` | `etl/core/registry.py` | Transform discovery via `@register_transform` |
+
+### Configuration Integration
+
+ETL parameters are configurable via `config/config.yaml`:
+
+```yaml
+features:
+  categories: ["structural", "dynamic", "rolling"]
+  depth_levels: 20
+  rolling_windows: [5, 15, 60, 300, 900]
+  bar_durations: [60, 300, 900, 3600]
+  ofi_decay_alpha: 0.5
+```
+
+Load and use:
+
+```python
+from config.config import load_config
+from etl.core.executor import TransformExecutor
+
+config = load_config()
+executor = TransformExecutor.from_config(config)
+```
+
+### State Management
+
+- **Checkpointing**: `etl/utils/state_manager.py` provides automatic checkpoint on SIGINT/SIGTERM
+- **Periodic saves**: Background checkpointing at configurable intervals
+- **State files**: Located in `storage.paths.state_dir` (default: `data/temp/state/`)
+
+**Full documentation**: See [`docs/ETL_CORE_FRAMEWORK.md`](docs/ETL_CORE_FRAMEWORK.md)
 
 ### Research-Optimized Parameters
 
-Both pipelines support these research-derived settings (configurable in `config.yaml`):
-
 | Parameter | Default | Research Basis |
 |-----------|---------|----------------|
-| `max_levels` | 20 | Zhang et al. (2019) - DeepLOB captures "walls" |
-| `horizons` | [5, 15, 60, 300, 900] | Multi-scale for mid-frequency |
+| `depth_levels` | 20 | Zhang et al. (2019) - DeepLOB captures "walls" |
+| `rolling_windows` | [5, 15, 60, 300, 900] | Multi-scale for mid-frequency |
 | `bar_durations` | [60, 300, 900, 3600] | Skip sub-minute (redundant at 1Hz) |
-| `ofi_levels` | 10 | Xu et al. (2019) - MLOFI reduces error 15-70% |
-| `ofi_decay_alpha` | 0.5 | Exponential decay for level weighting |
-| `bands_bps` | [5, 10, 25, 50, 100] | Wider bands for crypto volatility |
-| `kyle_lambda_window` | 300 | 5 min rolling for price impact |
+| `ofi_decay_alpha` | 0.5 | Xu et al. (2019) - MLOFI exponential decay |
+| `vpin_bucket_size` | 1.0 | Easley et al. (2012) - Volume-sync buckets |
 
 **References**:
 - Cont et al. (2014): OFI price impact

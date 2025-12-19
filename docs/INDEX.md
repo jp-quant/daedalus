@@ -45,6 +45,9 @@ This document provides a map of all documentation and quick access to key inform
 
 | Document | Purpose | Read When |
 |----------|---------|-----------|
+| [`ETL_CORE_FRAMEWORK.md`](ETL_CORE_FRAMEWORK.md) | **NEW** Core ETL framework guide | Building/extending transforms |
+| [`PARQUET_ETL_ARCHITECTURE.md`](PARQUET_ETL_ARCHITECTURE.md) | Parquet ETL architecture decisions | Understanding design rationale |
+| [`ETL_REFACTOR_DESIGN.md`](ETL_REFACTOR_DESIGN.md) | Refactor history and design | Historical context |
 | [`CCXT_ETL_ARCHITECTURE.md`](CCXT_ETL_ARCHITECTURE.md) | CCXT pipeline design | Understanding ETL flow |
 | [`FILENAME_PATTERNS.md`](FILENAME_PATTERNS.md) | Segment naming conventions | Debugging file issues |
 

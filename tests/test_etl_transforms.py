@@ -1004,5 +1004,362 @@ class TestTickerFeatureTransformMethods:
         assert "hour" in result.columns
 
 
+class TestDropRawBookArrays:
+    """Tests for drop_raw_book_arrays feature."""
+    
+    def create_orderbook_data(self) -> pl.LazyFrame:
+        """Create test orderbook data with bids/asks arrays."""
+        data = {
+            "timestamp": [1000, 2000, 3000],
+            "capture_ts": [
+                "2025-01-01 00:00:00",
+                "2025-01-01 00:00:01", 
+                "2025-01-01 00:00:02",
+            ],
+            "exchange": ["binance", "binance", "binance"],
+            "symbol": ["BTC/USDT", "BTC/USDT", "BTC/USDT"],
+            "bids": [
+                [{"price": 100.0, "size": 10.0}, {"price": 99.0, "size": 20.0}],
+                [{"price": 101.0, "size": 11.0}, {"price": 100.0, "size": 21.0}],
+                [{"price": 102.0, "size": 12.0}, {"price": 101.0, "size": 22.0}],
+            ],
+            "asks": [
+                [{"price": 101.0, "size": 10.0}, {"price": 102.0, "size": 20.0}],
+                [{"price": 102.0, "size": 11.0}, {"price": 103.0, "size": 21.0}],
+                [{"price": 103.0, "size": 12.0}, {"price": 104.0, "size": 22.0}],
+            ],
+        }
+        return pl.LazyFrame(data).with_columns([
+            pl.col("capture_ts").str.to_datetime()
+        ])
+    
+    def test_drop_raw_arrays_default_true(self):
+        """Test that raw arrays are dropped by default (drop_raw_book_arrays=True)."""
+        from etl.core.config import InputConfig, OutputConfig
+        
+        config = TransformConfig(
+            name="test_orderbook",
+            inputs={"orderbook": InputConfig(name="orderbook", path="test/orderbook")},
+            outputs={"silver_features": OutputConfig(name="silver_features", path="test/silver")},
+        )
+        transform = OrderbookFeatureTransform(config)
+        
+        df = self.create_orderbook_data()
+        
+        # Default should have drop_raw_book_arrays=True
+        feature_config = FeatureConfig(
+            depth_levels=5,
+            drop_raw_book_arrays=True,  # Explicitly set to ensure test clarity
+        )
+        context = TransformContext(
+            execution_id=str(uuid.uuid4()),
+            partition_values={"exchange": "binance", "symbol": "BTC/USDT"},
+            feature_config=feature_config,
+        )
+        
+        inputs = {"orderbook": df}
+        outputs = transform.transform(inputs, context)
+        
+        result_df = outputs["silver_features"].collect()
+        
+        # Raw arrays should be dropped
+        assert "bids" not in result_df.columns
+        assert "asks" not in result_df.columns
+        
+        # But extracted features should still be present
+        assert "mid_price" in result_df.columns
+        assert "spread" in result_df.columns
+        assert "bid_price_L0" in result_df.columns
+        assert "ask_price_L0" in result_df.columns
+    
+    def test_keep_raw_arrays_when_false(self):
+        """Test that raw arrays are kept when drop_raw_book_arrays=False."""
+        from etl.core.config import InputConfig, OutputConfig
+        
+        config = TransformConfig(
+            name="test_orderbook",
+            inputs={"orderbook": InputConfig(name="orderbook", path="test/orderbook")},
+            outputs={"silver_features": OutputConfig(name="silver_features", path="test/silver")},
+        )
+        transform = OrderbookFeatureTransform(config)
+        
+        df = self.create_orderbook_data()
+        
+        feature_config = FeatureConfig(
+            depth_levels=5,
+            drop_raw_book_arrays=False,  # Keep raw arrays
+        )
+        context = TransformContext(
+            execution_id=str(uuid.uuid4()),
+            partition_values={"exchange": "binance", "symbol": "BTC/USDT"},
+            feature_config=feature_config,
+        )
+        
+        inputs = {"orderbook": df}
+        outputs = transform.transform(inputs, context)
+        
+        result_df = outputs["silver_features"].collect()
+        
+        # Raw arrays should be kept
+        assert "bids" in result_df.columns
+        assert "asks" in result_df.columns
+        
+        # Extracted features should also be present
+        assert "mid_price" in result_df.columns
+        assert "spread" in result_df.columns
+    
+    def test_feature_config_default_drops_arrays(self):
+        """Test that FeatureConfig defaults to drop_raw_book_arrays=True."""
+        feature_config = FeatureConfig()
+        assert feature_config.drop_raw_book_arrays is True
+
+
+class TestOFIAlgorithmCorrectness:
+    """Tests to verify OFI algorithm mathematical correctness."""
+    
+    def test_ofi_price_unchanged_size_increase(self):
+        """Test OFI when price unchanged and size increases."""
+        from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
+        
+        config = StatefulProcessorConfig(horizons=[5])
+        processor = StatefulFeatureProcessor(config)
+        
+        # First snapshot
+        record1 = {
+            "timestamp": 1000,
+            "bids": [{"price": 100.0, "size": 10.0}],
+            "asks": [{"price": 101.0, "size": 10.0}],
+        }
+        processor.process_orderbook(record1)
+        
+        # Second snapshot: bid size increases by 5, ask size unchanged
+        # OFI = Δbid_size - Δask_size = 5 - 0 = 5
+        record2 = {
+            "timestamp": 2000,
+            "bids": [{"price": 100.0, "size": 15.0}],  # +5
+            "asks": [{"price": 101.0, "size": 10.0}],  # unchanged
+        }
+        features = processor.process_orderbook(record2)
+        
+        assert features["ofi_step"] == pytest.approx(5.0, rel=1e-6)
+    
+    def test_ofi_bid_price_up(self):
+        """Test OFI when bid price improves (goes up)."""
+        from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
+        
+        config = StatefulProcessorConfig(horizons=[5])
+        processor = StatefulFeatureProcessor(config)
+        
+        # First snapshot
+        record1 = {
+            "timestamp": 1000,
+            "bids": [{"price": 100.0, "size": 10.0}],
+            "asks": [{"price": 101.0, "size": 10.0}],
+        }
+        processor.process_orderbook(record1)
+        
+        # Second snapshot: bid price improved (bid_new > bid_old)
+        # Per Cont (2014): OFI_bid = +new_bid_size when bid improves
+        record2 = {
+            "timestamp": 2000,
+            "bids": [{"price": 100.5, "size": 20.0}],  # Price up
+            "asks": [{"price": 101.0, "size": 10.0}],  # unchanged
+        }
+        features = processor.process_orderbook(record2)
+        
+        # OFI_bid = new_bid_size = 20 (bid improved)
+        # OFI_ask = 0 (ask unchanged at same price, so Δsize)
+        # OFI = 20 - 0 = 20
+        assert features["ofi_step"] == pytest.approx(20.0, rel=1e-6)
+    
+    def test_ofi_bid_price_down(self):
+        """Test OFI when bid price worsens (goes down)."""
+        from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
+        
+        config = StatefulProcessorConfig(horizons=[5])
+        processor = StatefulFeatureProcessor(config)
+        
+        # First snapshot
+        record1 = {
+            "timestamp": 1000,
+            "bids": [{"price": 100.0, "size": 10.0}],
+            "asks": [{"price": 101.0, "size": 10.0}],
+        }
+        processor.process_orderbook(record1)
+        
+        # Second snapshot: bid price worsened (bid_new < bid_old)
+        # Per Cont (2014): OFI_bid = -old_bid_size when bid worsens
+        record2 = {
+            "timestamp": 2000,
+            "bids": [{"price": 99.5, "size": 20.0}],  # Price down
+            "asks": [{"price": 101.0, "size": 10.0}],  # unchanged
+        }
+        features = processor.process_orderbook(record2)
+        
+        # OFI_bid = -old_bid_size = -10 (bid worsened)
+        # OFI_ask = 0 (unchanged)
+        # OFI = -10 - 0 = -10
+        assert features["ofi_step"] == pytest.approx(-10.0, rel=1e-6)
+    
+    def test_ofi_ask_price_up(self):
+        """Test OFI when ask price worsens (goes up)."""
+        from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
+        
+        config = StatefulProcessorConfig(horizons=[5])
+        processor = StatefulFeatureProcessor(config)
+        
+        # First snapshot
+        record1 = {
+            "timestamp": 1000,
+            "bids": [{"price": 100.0, "size": 10.0}],
+            "asks": [{"price": 101.0, "size": 10.0}],
+        }
+        processor.process_orderbook(record1)
+        
+        # Second snapshot: ask price worsened (ask_new > ask_old)
+        # Per Cont (2014): OFI_ask = -old_ask_size when ask worsens
+        record2 = {
+            "timestamp": 2000,
+            "bids": [{"price": 100.0, "size": 10.0}],  # unchanged
+            "asks": [{"price": 101.5, "size": 20.0}],  # Price up (worse)
+        }
+        features = processor.process_orderbook(record2)
+        
+        # OFI_bid = 0 (unchanged)
+        # OFI_ask = -old_ask_size = -10 (ask worsened)
+        # OFI = 0 - (-10) = 10 (positive because less sell pressure)
+        assert features["ofi_step"] == pytest.approx(10.0, rel=1e-6)
+    
+    def test_ofi_ask_price_down(self):
+        """Test OFI when ask price improves (goes down)."""
+        from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
+        
+        config = StatefulProcessorConfig(horizons=[5])
+        processor = StatefulFeatureProcessor(config)
+        
+        # First snapshot
+        record1 = {
+            "timestamp": 1000,
+            "bids": [{"price": 100.0, "size": 10.0}],
+            "asks": [{"price": 101.0, "size": 10.0}],
+        }
+        processor.process_orderbook(record1)
+        
+        # Second snapshot: ask price improved (ask_new < ask_old)
+        # Per Cont (2014): OFI_ask = +new_ask_size when ask improves
+        record2 = {
+            "timestamp": 2000,
+            "bids": [{"price": 100.0, "size": 10.0}],  # unchanged
+            "asks": [{"price": 100.5, "size": 20.0}],  # Price down (better)
+        }
+        features = processor.process_orderbook(record2)
+        
+        # OFI_bid = 0 (unchanged)
+        # OFI_ask = +new_ask_size = 20 (ask improved = more sell pressure)
+        # OFI = 0 - 20 = -20 (negative because more sell pressure)
+        assert features["ofi_step"] == pytest.approx(-20.0, rel=1e-6)
+
+
+class TestMicropiceCorrectness:
+    """Tests to verify microprice calculation correctness."""
+    
+    def test_microprice_symmetric_sizes(self):
+        """Test microprice equals mid when sizes are equal."""
+        from etl.features.orderbook import extract_structural_features
+        
+        data = {
+            "timestamp": [1000],
+            "bids": [[{"price": 100.0, "size": 10.0}]],
+            "asks": [[{"price": 102.0, "size": 10.0}]],  # Same size
+        }
+        df = pl.LazyFrame(data)
+        
+        result = extract_structural_features(df, max_levels=1)
+        result_df = result.collect()
+        
+        # When sizes are equal, microprice = mid
+        # Mid = (100 + 102) / 2 = 101
+        # Microprice = (bid*ask_size + ask*bid_size) / (bid_size + ask_size)
+        #            = (100*10 + 102*10) / (10 + 10) = 2020 / 20 = 101
+        assert result_df["mid_price"][0] == pytest.approx(101.0, rel=1e-6)
+        assert result_df["microprice"][0] == pytest.approx(101.0, rel=1e-6)
+    
+    def test_microprice_skewed_toward_larger_size(self):
+        """Test microprice is skewed toward price with larger size."""
+        from etl.features.orderbook import extract_structural_features
+        
+        data = {
+            "timestamp": [1000],
+            "bids": [[{"price": 100.0, "size": 30.0}]],  # Larger bid size
+            "asks": [[{"price": 102.0, "size": 10.0}]],
+        }
+        df = pl.LazyFrame(data)
+        
+        result = extract_structural_features(df, max_levels=1)
+        result_df = result.collect()
+        
+        # Microprice = (bid*ask_size + ask*bid_size) / (bid_size + ask_size)
+        #            = (100*10 + 102*30) / (30 + 10)
+        #            = (1000 + 3060) / 40 = 4060 / 40 = 101.5
+        # Skewed toward ask because larger bid_size weights ask_price more
+        assert result_df["microprice"][0] == pytest.approx(101.5, rel=1e-6)
+
+
+class TestImbalanceCorrectness:
+    """Tests to verify imbalance calculation correctness."""
+    
+    def test_imbalance_zero_when_balanced(self):
+        """Test imbalance is 0 when bid/ask sizes are equal."""
+        from etl.features.orderbook import extract_structural_features
+        
+        data = {
+            "timestamp": [1000],
+            "bids": [[{"price": 100.0, "size": 10.0}]],
+            "asks": [[{"price": 101.0, "size": 10.0}]],
+        }
+        df = pl.LazyFrame(data)
+        
+        result = extract_structural_features(df, max_levels=1)
+        result_df = result.collect()
+        
+        # Imbalance = (bid_size - ask_size) / (bid_size + ask_size)
+        #           = (10 - 10) / (10 + 10) = 0
+        assert result_df["imbalance_L1"][0] == pytest.approx(0.0, rel=1e-6)
+    
+    def test_imbalance_positive_when_bid_heavy(self):
+        """Test imbalance is positive when bid size > ask size."""
+        from etl.features.orderbook import extract_structural_features
+        
+        data = {
+            "timestamp": [1000],
+            "bids": [[{"price": 100.0, "size": 30.0}]],  # Larger
+            "asks": [[{"price": 101.0, "size": 10.0}]],
+        }
+        df = pl.LazyFrame(data)
+        
+        result = extract_structural_features(df, max_levels=1)
+        result_df = result.collect()
+        
+        # Imbalance = (30 - 10) / (30 + 10) = 20 / 40 = 0.5
+        assert result_df["imbalance_L1"][0] == pytest.approx(0.5, rel=1e-6)
+    
+    def test_imbalance_negative_when_ask_heavy(self):
+        """Test imbalance is negative when ask size > bid size."""
+        from etl.features.orderbook import extract_structural_features
+        
+        data = {
+            "timestamp": [1000],
+            "bids": [[{"price": 100.0, "size": 10.0}]],
+            "asks": [[{"price": 101.0, "size": 30.0}]],  # Larger
+        }
+        df = pl.LazyFrame(data)
+        
+        result = extract_structural_features(df, max_levels=1)
+        result_df = result.collect()
+        
+        # Imbalance = (10 - 30) / (10 + 30) = -20 / 40 = -0.5
+        assert result_df["imbalance_L1"][0] == pytest.approx(-0.5, rel=1e-6)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
