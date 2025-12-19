@@ -832,27 +832,41 @@ class TestCreateOrderbookFeatureConfig:
         from etl.transforms.orderbook import create_orderbook_feature_config
         
         config = create_orderbook_feature_config(
-            bronze_path="data/bronze/orderbook",
+            orderbook_path="data/bronze/orderbook",
             silver_path="data/silver/orderbook",
         )
         
         assert config.name == "orderbook_features"
-        assert "bronze" in config.inputs
+        assert "orderbook" in config.inputs
         assert "silver" in config.outputs
-        assert config.inputs["bronze"].path == "data/bronze/orderbook"
+        assert config.inputs["orderbook"].path == "data/bronze/orderbook"
         assert config.outputs["silver"].path == "data/silver/orderbook"
+    
+    def test_create_orderbook_feature_config_with_trades(self):
+        """Test create_orderbook_feature_config with trades path for TFI."""
+        from etl.transforms.orderbook import create_orderbook_feature_config
+        
+        config = create_orderbook_feature_config(
+            orderbook_path="data/bronze/orderbook",
+            silver_path="data/silver/orderbook",
+            trades_path="data/bronze/trades",
+        )
+        
+        assert "orderbook" in config.inputs
+        assert "trades" in config.inputs
+        assert config.inputs["trades"].path == "data/bronze/trades"
     
     def test_create_orderbook_feature_config_custom_partitions(self):
         """Test create_orderbook_feature_config with custom partition columns."""
         from etl.transforms.orderbook import create_orderbook_feature_config
         
         config = create_orderbook_feature_config(
-            bronze_path="data/bronze/orderbook",
+            orderbook_path="data/bronze/orderbook",
             silver_path="data/silver/orderbook",
             partition_cols=["exchange", "year", "month"],
         )
         
-        assert config.inputs["bronze"].partition_cols == ["exchange", "year", "month"]
+        assert config.inputs["orderbook"].partition_cols == ["exchange", "year", "month"]
 
 
 class TestBarAggregationTransformMethods:

@@ -5,14 +5,14 @@ Features Module
 Feature extraction and computation for orderbook data.
 
 Modules:
-- snapshot: Row-by-row structural feature extraction (for streaming)
+- snapshot: Row-by-row structural feature extraction (for streaming/dict data)
 - streaming: Online algorithms for rolling statistics
-- state: Stateful symbol processing with bar building
+- state: Stateful symbol processing with bar building  
 - orderbook: Vectorized structural features (Polars, for batch)
 - stateful: Stateful feature processor for batch processing
 """
 
-# Row-by-row extraction (original)
+# Row-by-row extraction (for dict-based streaming)
 from .snapshot import extract_orderbook_features
 
 # Streaming statistics
@@ -41,7 +41,7 @@ from .orderbook import (
 from .stateful import StatefulFeatureProcessor, StatefulProcessorConfig
 
 __all__ = [
-    # Snapshot extraction
+    # Snapshot extraction (dict-based)
     "extract_orderbook_features",
     # Streaming statistics
     "Welford",

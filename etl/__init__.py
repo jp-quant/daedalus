@@ -127,7 +127,7 @@ __all__ = [
     "SymbolState",
     "StateConfig",
     "BarBuilder",
-    # Features - Extraction
+    # Features - Extraction (vectorized Polars and dict-based)
     "extract_orderbook_features",
     "extract_structural_features",
     "compute_rolling_features",

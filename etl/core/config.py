@@ -278,3 +278,32 @@ class FilterSpec:
             filters.append(("day", "=", self.day))
         
         return filters
+    
+    def to_dict(self) -> dict[str, Any]:
+        """
+        Convert to dictionary of non-None values.
+        
+        Useful for logging, partition path building, and context passing.
+        
+        Returns:
+            Dictionary with only the set (non-None) filter values.
+        """
+        result = {}
+        if self.exchange is not None:
+            result["exchange"] = self.exchange
+        if self.symbol is not None:
+            result["symbol"] = self.symbol
+        if self.year is not None:
+            result["year"] = self.year
+        if self.month is not None:
+            result["month"] = self.month
+        if self.day is not None:
+            result["day"] = self.day
+        return result
+    
+    def __repr__(self) -> str:
+        """Human-readable representation."""
+        parts = []
+        for key, val in self.to_dict().items():
+            parts.append(f"{key}={val!r}")
+        return f"FilterSpec({', '.join(parts)})" if parts else "FilterSpec()"

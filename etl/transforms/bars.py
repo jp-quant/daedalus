@@ -186,6 +186,11 @@ def aggregate_bars_vectorized(
             ((pl.col("close") - pl.col("open")) / pl.col("open")).alias("return"),
             ((pl.col("close") / pl.col("open")).log()).alias("log_return"),
             ((pl.col("high") - pl.col("low")) / pl.col("open")).alias("range"),
+            
+            # Partition columns for Hive-style partitioning
+            pl.col(time_col).dt.year().alias("year"),
+            pl.col(time_col).dt.month().alias("month"),
+            pl.col(time_col).dt.day().alias("day"),
         ])
         
         bars[duration] = agg_df
@@ -265,6 +270,11 @@ def aggregate_orderbook_bars(
             pl.lit(duration).alias("bar_duration_sec"),
             ((pl.col("close") - pl.col("open")) / pl.col("open")).alias("return"),
             (pl.col("realized_variance").sqrt() * pl.lit((86400 / duration) ** 0.5)).alias("annualized_vol"),
+            
+            # Partition columns for Hive-style partitioning
+            pl.col("capture_ts").dt.year().alias("year"),
+            pl.col("capture_ts").dt.month().alias("month"),
+            pl.col("capture_ts").dt.day().alias("day"),
         ])
         
         bars[duration] = agg_df

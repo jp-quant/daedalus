@@ -137,10 +137,15 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 | `etl/features/orderbook.py` | Vectorized structural + rolling orderbook features (Polars) |
 | `etl/features/stateful.py` | Stateful (sequential) orderbook features: OFI/MLOFI/TFI/Kyle/VPIN |
 | `etl/features/streaming.py` | Online stats primitives (RollingWelford, RollingSum, VPINCalculator, KyleLambdaEstimator) |
-| `etl/transforms/` | Channel transforms (ticker/trades/bars) used by scripts |
-| `scripts/run_etl_v2.py` | Batch runner that reads raw Parquet segments and writes silver/gold outputs |
+| `etl/transforms/` | Channel transforms (ticker/trades/orderbook/bars) used by scripts |
+| `scripts/etl/run_orderbook_features.py` | Batch runner for orderbook features (supports `--trades` to drive TFI correctly) |
+| `scripts/etl/run_trades_features.py` | Batch runner for trades features (+ optional bars output) |
+| `scripts/etl/run_ticker_features.py` | Batch runner for ticker features (+ optional rolling stats) |
+| `scripts/etl/run_watcher.py` | Continuous watcher for ready/ segments with checkpointing |
+| `etl/utils/state_manager.py` | State persistence for checkpoint/resume and graceful shutdown |
+| `etl/features/archived/` | Legacy files (snapshot.py, state.py) - deprecated, kept for reference |
 
-**Start here**: Read `docs/PARQUET_ETL_FEATURES.md` for feature reference and `scripts/run_etl_v2.py` for the runnable batch path.
+**Start here**: Read `docs/PARQUET_ETL_FEATURES.md` for feature reference and `scripts/etl/run_orderbook_features.py` for the runnable batch path.
 
 **Key Components for orderbook features**:
 - `extract_structural_features()` in `etl/features/orderbook.py`
@@ -154,13 +159,14 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 
 ### Processors
 
-This repo’s current “v2” batch path uses feature modules directly (see `scripts/run_etl_v2.py`).
+This repo’s current batch path uses the modular framework runners in `scripts/etl/`.
 
 ### Orchestration
 
 Orchestration entry points:
 - `scripts/run_ingestion.py` (collect raw)
-- `scripts/run_etl_v2.py` (batch transform raw parquet → silver/gold)
+- `scripts/etl/run_orderbook_features.py` (batch orderbook → features)
+- `scripts/etl/run_watcher.py` (continuous processing of ready/ segments)
 
 ### Configuration
 
@@ -169,6 +175,10 @@ Orchestration entry points:
 | `config/config.py` | Pydantic configuration models |
 | `config/config.yaml` | Runtime configuration (NOT in git - contains API keys) |
 | `config/config.examples.yaml` | Template for config.yaml |
+
+**Tier naming**: output tier folder names are configurable via `storage.paths.tier_*` (e.g. rename `silver` → `platinum`).
+
+**State persistence**: ETL state/checkpoint directory configurable via `storage.paths.state_dir` (default: `temp/state`). Automatic checkpoint on SIGINT/SIGTERM via `StateManager`.
 
 ### Storage
 
@@ -235,10 +245,18 @@ IngestionConfig.raw_format → StreamingParquetWriter or LogWriter
     ↓
 etl.channels.orderbook.processor_options
     ↓
-scripts/run_etl_v2.py
+scripts/etl/run_orderbook_features.py
     ↓
 etl/features/orderbook.py (vectorized) + etl/features/stateful.py (sequential)
-```
+
+---
+
+## Deep Research Prompt (Quant Feature Roadmap)
+
+If you need to spin up a research-oriented agent session to propose new feature families and an evaluation plan across orderbook/trades/ticker, use:
+
+- `docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md` - Focused on orderbook microstructure
+- `docs/FRONTIER_QUANT_RESEARCH_PROMPT.md` - Broader frontier approaches for crypto markets
 
 ---
 
@@ -274,7 +292,7 @@ etl/features/orderbook.py (vectorized) + etl/features/stateful.py (sequential)
 python scripts/run_ingestion.py --sources ccxt
 
 # Terminal 2: Continuous ETL (real-time feature engineering)
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 
 # Terminal 3: Cloud Backup (periodic)
 python storage/sync.py upload --source-path processed/ --dest-path s3://bucket/processed/

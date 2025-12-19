@@ -157,7 +157,7 @@ Configuration is read automatically from `config/config.yaml`.
 ### Start ETL
 
 ```bash
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 ```
 
 The ETL watcher reads from `etl_storage_input` and writes to `etl_storage_output`.

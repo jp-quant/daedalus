@@ -259,7 +259,7 @@ writer = LogWriter(
 
 Scripts are already updated to use the new architecture:
 - `scripts/run_ingestion.py` uses `IngestionPipeline` orchestrator
-- `scripts/run_etl_watcher.py` needs updating (TODO)
+- `scripts/etl/run_watcher.py` is the current continuous ETL watcher
 
 ## Architecture Diagram
 

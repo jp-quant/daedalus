@@ -203,8 +203,8 @@ Silver/Gold: Feature-Engineered Parquet
 - Runs continuously until Ctrl+C
 - Prints stats every 60 seconds
 
-**run_etl_watcher.py** - **Terminal 2**: Continuous ETL
-- Usage: `python scripts/run_etl_watcher.py --poll-interval 30`
+**scripts/etl/run_watcher.py** - **Terminal 2**: Continuous ETL
+- Usage: `python scripts/etl/run_watcher.py --poll-interval 30`
 - Polls ready/ directory every 30 seconds
 - Processes new segments automatically
 
@@ -442,7 +442,7 @@ python scripts/run_ingestion.py --sources ccxt
 
 #### Terminal 2: ETL + Feature Engineering
 ```bash
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 ```
 - Polls ready/ every 30 seconds
 - Processes new segments automatically

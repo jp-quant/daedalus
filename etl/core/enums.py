@@ -7,22 +7,57 @@ Eliminates hardcoded strings throughout the codebase.
 """
 
 from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from config.config import PathConfig
 
 
 class DataTier(str, Enum):
     """
     Medallion architecture data tiers.
     
+    Default naming convention:
     - BRONZE: Raw ingested data
     - SILVER: Cleaned and feature-enriched data
     - GOLD: Aggregated/business-ready data
+    
+    These are logical tiers - actual path names are configurable
+    via PathConfig.tier_raw, tier_features, tier_aggregates.
     """
     BRONZE = "bronze"
     SILVER = "silver"
     GOLD = "gold"
     
+    # Aliases for custom naming
+    RAW = "bronze"
+    FEATURES = "silver"
+    AGGREGATES = "gold"
+    
     def __str__(self) -> str:
         return self.value
+    
+    @classmethod
+    def from_config(cls, path_config: "PathConfig", tier: str) -> str:
+        """
+        Get the actual path name for a tier from config.
+        
+        Args:
+            path_config: PathConfig with tier_raw, tier_features, tier_aggregates
+            tier: One of 'bronze'/'raw', 'silver'/'features', 'gold'/'aggregates'
+        
+        Returns:
+            The configured path name for this tier
+        """
+        tier_map = {
+            "bronze": path_config.tier_raw,
+            "raw": path_config.tier_raw,
+            "silver": path_config.tier_features,
+            "features": path_config.tier_features,
+            "gold": path_config.tier_aggregates,
+            "aggregates": path_config.tier_aggregates,
+        }
+        return tier_map.get(tier.lower(), tier)
 
 
 class StorageBackendType(str, Enum):

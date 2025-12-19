@@ -19,6 +19,7 @@ Design Philosophy:
 from etl.core.enums import (
     CompressionCodec,
     DataFormat,
+    DataTier,
     FeatureCategory,
     PartitionGranularity,
     ProcessingMode,
@@ -43,6 +44,7 @@ __all__ = [
     # Enums
     "StorageBackendType",
     "DataFormat",
+    "DataTier",
     "CompressionCodec",
     "WriteMode",
     "ProcessingMode",

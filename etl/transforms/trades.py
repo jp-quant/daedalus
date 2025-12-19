@@ -12,17 +12,18 @@ Features computed:
 - Dollar volume
 - Time features
 - Log returns
-- Rolling VWAP
+- Rolling VWAP (optional aggregates)
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import polars as pl
 
 from etl.core.base import BaseTransform, TransformContext
-from etl.core.config import TransformConfig
+from etl.core.config import TransformConfig, FeatureConfig
 from etl.core.registry import register_transform
+from etl.core.enums import FeatureCategory
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,24 @@ class TradesFeatureTransform(BaseTransform):
     Transform bronze trades data to silver feature data.
     
     Trades data is processed vectorized for basic features.
+    Optionally computes rolling aggregates if feature_config contains ROLLING category.
     
     Features computed:
     - is_buy: Boolean flag (1 if buy, 0 if sell)
     - dollar_volume: price * amount
+    - signed_volume: positive for buys, negative for sells
     - hour: Hour of day
     - day_of_week: Day of week
+    - is_weekend: Weekend indicator
     - log_return: Log return from previous trade price
+    
+    Optional rolling features (if ROLLING in categories):
+    - vwap_{window}s: Rolling VWAP
+    - volume_{window}s: Rolling volume
+    - dollar_volume_{window}s: Rolling dollar volume
+    - trade_count_{window}s: Rolling trade count
+    - buy_ratio_{window}s: Ratio of buy trades
+    - realized_var_{window}s: Rolling realized variance
     
     Example:
         config = TransformConfig(
@@ -61,7 +73,7 @@ class TradesFeatureTransform(BaseTransform):
         
         Args:
             inputs: Dictionary with input LazyFrame containing trades data
-            context: Execution context
+            context: Execution context (contains feature_config for rolling windows)
         
         Returns:
             Dictionary with output key containing feature LazyFrame
@@ -72,8 +84,22 @@ class TradesFeatureTransform(BaseTransform):
         
         logger.info(f"Transforming trades data with {self.name}")
         
-        # Apply trades feature engineering
+        # Apply base trades feature engineering
         silver_lf = compute_trades_features(bronze_lf)
+        
+        # Optionally add rolling aggregates based on feature_config
+        if context.feature_config:
+            feature_config = context.feature_config
+            
+            # Check if ROLLING category is enabled
+            if FeatureCategory.ROLLING in feature_config.categories:
+                windows = feature_config.rolling_windows
+                if windows:
+                    logger.info(f"Computing rolling aggregates: {windows}")
+                    silver_lf = compute_trades_aggregates(
+                        silver_lf,
+                        windows=windows,
+                    )
         
         # Return with output key matching config
         output_key = list(self.config.outputs.keys())[0]
@@ -116,6 +142,10 @@ def compute_trades_features(df: pl.LazyFrame) -> pl.LazyFrame:
         pl.col("capture_ts").dt.hour().alias("hour"),
         pl.col("capture_ts").dt.weekday().alias("day_of_week"),
         (pl.col("capture_ts").dt.weekday() >= 5).alias("is_weekend"),
+        # Partition columns for Hive-style partitioning
+        pl.col("capture_ts").dt.year().alias("year"),
+        pl.col("capture_ts").dt.month().alias("month"),
+        pl.col("capture_ts").dt.day().alias("day"),
     ])
     
     # Add log returns (sorted within each symbol)
@@ -254,8 +284,68 @@ def aggregate_trades_to_bars(
                       (pl.col("buy_volume") + pl.col("sell_volume")))
                 .otherwise(0.0)
                 .alias("trade_imbalance"),
+            
+            # Partition columns for Hive-style partitioning
+            pl.col("capture_ts").dt.year().alias("year"),
+            pl.col("capture_ts").dt.month().alias("month"),
+            pl.col("capture_ts").dt.day().alias("day"),
         ])
         
         bars[duration] = agg_df
     
     return bars
+
+
+def create_trades_feature_config(
+    input_path: str,
+    output_path: str,
+    partition_cols: Optional[List[str]] = None,
+) -> "TransformConfig":
+    """
+    Create a standard configuration for trades feature transform.
+    
+    Args:
+        input_path: Path to bronze trades data
+        output_path: Path to write silver trades features
+        partition_cols: Partition columns (default: exchange, symbol, year, month, day)
+    
+    Returns:
+        TransformConfig ready to use with TradesFeatureTransform
+    
+    Example:
+        config = create_trades_feature_config(
+            input_path="bronze/ccxt/trades",
+            output_path="silver/ccxt/trades",
+        )
+        transform = TradesFeatureTransform(config)
+        executor.execute(transform)
+    """
+    from etl.core.config import InputConfig, OutputConfig, TransformConfig
+    from etl.core.enums import CompressionCodec, DataFormat, WriteMode
+    
+    if partition_cols is None:
+        partition_cols = ["exchange", "symbol", "year", "month", "day"]
+    
+    return TransformConfig(
+        name="trades_features",
+        description="Extract features from bronze trades data",
+        inputs={
+            "trades": InputConfig(
+                name="trades",
+                path=input_path,
+                format=DataFormat.PARQUET,
+                partition_cols=partition_cols,
+            ),
+        },
+        outputs={
+            "silver": OutputConfig(
+                name="silver",
+                path=output_path,
+                format=DataFormat.PARQUET,
+                partition_cols=partition_cols,
+                mode=WriteMode.OVERWRITE_PARTITION,
+                compression=CompressionCodec.ZSTD,
+                compression_level=3,
+            ),
+        },
+    )

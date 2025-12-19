@@ -3,19 +3,39 @@ Transform Executor
 ==================
 
 Orchestrates transform execution: resolves inputs, runs transform, writes outputs.
+
+The executor is the central component that:
+1. Reads inputs from storage based on InputConfig
+2. Applies FilterSpec for partition pruning and row filtering
+3. Passes resolved LazyFrames to the transform
+4. Writes outputs to storage based on OutputConfig
+5. Manages execution context, logging, and statistics
+
+Usage:
+    from etl.core.executor import TransformExecutor
+    from etl.core.config import FilterSpec
+    
+    executor = TransformExecutor()
+    result = executor.execute(
+        transform=my_transform,
+        filter_spec=FilterSpec(exchange="binanceus", symbol="BTC/USD"),
+    )
 """
+
+from __future__ import annotations
 
 import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union
 
 import polars as pl
 
 from etl.core.base import BaseTransform, TransformContext
 from etl.core.config import (
     FeatureConfig,
+    FilterSpec,
     InputConfig,
     OutputConfig,
     StorageConfig,
@@ -29,6 +49,12 @@ from etl.core.enums import (
     WriteMode,
 )
 
+if TYPE_CHECKING:
+    from config.config import DaedalusConfig
+
+# Type alias for Polars compression literals
+ParquetCompression = Literal["lz4", "uncompressed", "snappy", "gzip", "brotli", "zstd"]
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,15 +62,35 @@ class TransformExecutor:
     """
     Executes transforms by resolving inputs, running transform logic, and writing outputs.
     
-    The executor handles:
-    - Reading inputs from storage (local or S3)
+    The executor handles the complete lifecycle:
+    - Reading inputs from storage (local or S3) with partition pruning
+    - Applying FilterSpec for efficient data loading
     - Passing resolved data to the transform
-    - Writing transform outputs to storage
+    - Writing transform outputs to storage with proper partitioning
     - Managing execution context and metadata
     
+    This is the PRIMARY interface for running transforms. ETL scripts should use
+    the executor rather than manually scanning data and writing outputs.
+    
     Example:
-        executor = TransformExecutor()
-        result = executor.execute(my_transform)
+        # Create executor with feature configuration
+        executor = TransformExecutor(
+            feature_config=FeatureConfig(
+                categories={FeatureCategory.STRUCTURAL, FeatureCategory.DYNAMIC},
+                depth_levels=20,
+            )
+        )
+        
+        # Create filter for specific partition
+        filter_spec = FilterSpec(exchange="binanceus", symbol="BTC/USD")
+        
+        # Execute transform - executor handles I/O
+        result = executor.execute(
+            transform=OrderbookFeatureTransform(config),
+            filter_spec=filter_spec,
+        )
+        
+        print(f"Processed {result['write_stats']['silver']['rows']} rows")
     """
     
     def __init__(
@@ -56,12 +102,37 @@ class TransformExecutor:
         Initialize executor.
         
         Args:
-            default_storage: Default storage config if not specified per input/output
-            feature_config: Feature computation configuration
+            default_storage: Default storage config if not specified per input/output.
+                           Used when InputConfig/OutputConfig don't specify storage.
+            feature_config: Feature computation configuration. Passed to transforms
+                          via TransformContext for feature-specific parameters.
         """
         self.default_storage = default_storage or StorageConfig()
         self.feature_config = feature_config or FeatureConfig()
         self._storage_backend = None  # Lazy loaded
+    
+    @classmethod
+    def from_config(cls, config: "DaedalusConfig") -> "TransformExecutor":
+        """
+        Create executor from Daedalus configuration.
+        
+        Args:
+            config: DaedalusConfig instance
+            
+        Returns:
+            Configured TransformExecutor
+        """
+        storage_config = StorageConfig(
+            backend_type=StorageBackendType.LOCAL,
+            base_path=config.storage.etl_storage_input.base_dir,
+        )
+        
+        feature_config = FeatureConfig()  # Could be enhanced from config
+        
+        return cls(
+            default_storage=storage_config,
+            feature_config=feature_config,
+        )
     
     # =========================================================================
     # Main Execution
@@ -71,27 +142,65 @@ class TransformExecutor:
         self,
         transform: BaseTransform,
         context: Optional[TransformContext] = None,
+        filter_spec: Optional[FilterSpec] = None,
         dry_run: bool = False,
+        limit_rows: Optional[int] = None,
     ) -> dict[str, Any]:
         """
-        Execute a transform.
+        Execute a transform end-to-end.
+        
+        This is the main entry point for running transforms. The executor:
+        1. Creates execution context if not provided
+        2. Resolves inputs from storage using InputConfig paths
+        3. Applies FilterSpec for partition pruning and row filtering
+        4. Calls transform.transform() with resolved inputs
+        5. Writes outputs to storage using OutputConfig paths
         
         Args:
-            transform: The transform to execute.
-            context: Execution context (created if not provided).
-            dry_run: If True, don't write outputs (useful for testing).
+            transform: The transform to execute. Must have config with inputs/outputs.
+            context: Execution context (created if not provided). Contains feature_config,
+                    execution_id, and partition_values for the transform.
+            filter_spec: Optional filter for partition pruning. If provided, only
+                        partitions matching the filter are read. Significantly reduces
+                        I/O for large datasets.
+            dry_run: If True, don't write outputs. Useful for testing transforms
+                    without modifying storage.
+            limit_rows: If provided, limit each input to this many rows.
+                       Useful for testing with small data samples.
         
         Returns:
-            Execution result with metadata.
+            Execution result dictionary with:
+            - success: bool
+            - execution_id: str
+            - transform: str (transform name)
+            - duration_seconds: float
+            - inputs_read: list[str]
+            - outputs_written: list[str]
+            - write_stats: dict[str, dict] (rows/files per output)
         
         Raises:
             ValueError: If inputs cannot be resolved.
             RuntimeError: If transform execution fails.
+        
+        Example:
+            result = executor.execute(
+                transform=my_transform,
+                filter_spec=FilterSpec(exchange="binanceus"),
+                limit_rows=10000,  # For testing
+            )
+            if result["success"]:
+                print(f"Wrote {result['write_stats']['silver']['rows']} rows")
         """
         execution_id = str(uuid.uuid4())[:8]
         start_time = datetime.now()
         
         logger.info(f"[{execution_id}] Starting transform: {transform.name}")
+        
+        # Build partition values from filter_spec for context
+        partition_values = None
+        if filter_spec:
+            partition_values = filter_spec.to_dict()
+            logger.info(f"[{execution_id}] Filter: {partition_values}")
         
         # Create context if not provided
         if context is None:
@@ -99,15 +208,29 @@ class TransformExecutor:
                 execution_id=execution_id,
                 execution_time=start_time,
                 feature_config=self.feature_config,
+                partition_values=partition_values,
             )
         
         try:
             # Initialize transform
             transform.initialize(context)
             
-            # Resolve inputs
+            # Resolve inputs with filter
             logger.info(f"[{execution_id}] Resolving {len(transform.config.inputs)} inputs")
-            inputs = self._resolve_inputs(transform.config, context)
+            inputs = self._resolve_inputs(
+                config=transform.config,
+                context=context,
+                filter_spec=filter_spec,
+                limit_rows=limit_rows,
+            )
+            
+            # Log input statistics
+            for name, lf in inputs.items():
+                try:
+                    schema = lf.collect_schema()
+                    logger.info(f"[{execution_id}] Input '{name}': {len(schema.names())} columns")
+                except Exception:
+                    logger.info(f"[{execution_id}] Input '{name}': schema pending")
             
             # Validate inputs
             transform.validate_inputs(inputs)
@@ -125,7 +248,14 @@ class TransformExecutor:
                 write_stats = self._write_outputs(transform.config, outputs, context)
             else:
                 logger.info(f"[{execution_id}] Dry run - skipping output writes")
+                # Still collect outputs to get row counts
                 write_stats = {}
+                for name, lf in outputs.items():
+                    try:
+                        df = lf.collect()
+                        write_stats[name] = {"rows": len(df), "files": 0, "dry_run": True}
+                    except Exception as e:
+                        write_stats[name] = {"error": str(e)}
             
             # Finalize transform
             transform.finalize(context)
@@ -144,11 +274,23 @@ class TransformExecutor:
             }
             
             logger.info(f"[{execution_id}] Transform completed in {duration:.2f}s")
+            self._log_write_stats(execution_id, write_stats)
+            
             return result
             
         except Exception as e:
-            logger.error(f"[{execution_id}] Transform failed: {e}")
+            logger.error(f"[{execution_id}] Transform failed: {e}", exc_info=True)
             raise RuntimeError(f"Transform '{transform.name}' failed: {e}") from e
+    
+    def _log_write_stats(self, execution_id: str, write_stats: dict[str, dict]) -> None:
+        """Log write statistics in a readable format."""
+        for name, stats in write_stats.items():
+            if "error" in stats:
+                logger.warning(f"[{execution_id}]   {name}: ERROR - {stats['error']}")
+            elif stats.get("dry_run"):
+                logger.info(f"[{execution_id}]   {name}: {stats['rows']:,} rows (dry run)")
+            else:
+                logger.info(f"[{execution_id}]   {name}: {stats['rows']:,} rows -> {stats['files']} files")
     
     # =========================================================================
     # Input Resolution
@@ -158,13 +300,17 @@ class TransformExecutor:
         self,
         config: TransformConfig,
         context: TransformContext,
+        filter_spec: Optional[FilterSpec] = None,
+        limit_rows: Optional[int] = None,
     ) -> dict[str, pl.LazyFrame]:
         """
-        Resolve all inputs to LazyFrames.
+        Resolve all inputs to LazyFrames with optional filtering.
         
         Args:
-            config: Transform configuration.
+            config: Transform configuration with input definitions.
             context: Execution context.
+            filter_spec: Optional filter for partition pruning.
+            limit_rows: Optional row limit for testing.
         
         Returns:
             Dictionary mapping input names to LazyFrames.
@@ -173,7 +319,18 @@ class TransformExecutor:
         
         for name, input_config in config.inputs.items():
             logger.debug(f"Resolving input: {name} from {input_config.path}")
-            inputs[name] = self._read_input(input_config, config.storage)
+            
+            lf = self._read_input(
+                input_config=input_config,
+                default_storage=config.storage,
+                filter_spec=filter_spec,
+            )
+            
+            # Apply row limit if specified (for testing)
+            if limit_rows is not None:
+                lf = lf.head(limit_rows)
+            
+            inputs[name] = lf
         
         return inputs
     
@@ -181,16 +338,18 @@ class TransformExecutor:
         self,
         input_config: InputConfig,
         default_storage: Optional[StorageConfig],
+        filter_spec: Optional[FilterSpec] = None,
     ) -> pl.LazyFrame:
         """
-        Read a single input to a LazyFrame.
+        Read a single input to a LazyFrame with filtering.
         
         Args:
             input_config: Input configuration.
             default_storage: Fallback storage config.
+            filter_spec: Optional filter specification for partition pruning.
         
         Returns:
-            LazyFrame with input data.
+            LazyFrame with input data (filtered if filter_spec provided).
         """
         storage = input_config.storage or default_storage or self.default_storage
         path = input_config.path
@@ -198,6 +357,60 @@ class TransformExecutor:
         # Build full path if needed
         if storage.base_path:
             path = str(Path(storage.base_path) / path)
+        
+        # Read based on format
+        if input_config.format == DataFormat.PARQUET:
+            lf = self._read_parquet(
+                path=path,
+                storage=storage,
+                columns=input_config.columns,
+            )
+        elif input_config.format == DataFormat.NDJSON:
+            lf = self._read_ndjson(path=path, storage=storage)
+        else:
+            raise ValueError(f"Unsupported input format: {input_config.format}")
+        
+        # Apply FilterSpec if provided
+        if filter_spec is not None:
+            filter_expr = filter_spec.to_polars_filter()
+            if filter_expr is not None:
+                lf = lf.filter(filter_expr)
+        
+        # Apply InputConfig filters if provided (legacy support)
+        if input_config.filters:
+            for col, op, val in input_config.filters:
+                lf = self._apply_filter(lf, col, op, val)
+        
+        # Apply column selection if provided
+        if input_config.columns:
+            lf = lf.select(input_config.columns)
+        
+        return lf
+    
+    def _apply_filter(
+        self,
+        lf: pl.LazyFrame,
+        col: str,
+        op: str,
+        val: Any,
+    ) -> pl.LazyFrame:
+        """Apply a single filter condition to LazyFrame."""
+        if op == "=":
+            return lf.filter(pl.col(col) == val)
+        elif op == "!=":
+            return lf.filter(pl.col(col) != val)
+        elif op == ">":
+            return lf.filter(pl.col(col) > val)
+        elif op == ">=":
+            return lf.filter(pl.col(col) >= val)
+        elif op == "<":
+            return lf.filter(pl.col(col) < val)
+        elif op == "<=":
+            return lf.filter(pl.col(col) <= val)
+        elif op == "in":
+            return lf.filter(pl.col(col).is_in(val))
+        else:
+            raise ValueError(f"Unsupported filter operator: {op}")
         
         # Read based on format
         if input_config.format == DataFormat.PARQUET:
@@ -218,17 +431,20 @@ class TransformExecutor:
         self,
         path: str,
         storage: StorageConfig,
-        filters: Optional[list[tuple[str, str, Any]]] = None,
         columns: Optional[list[str]] = None,
     ) -> pl.LazyFrame:
         """
         Read Parquet file(s) to LazyFrame.
         
+        Supports:
+        - Single file
+        - Directory with Hive partitioning  
+        - Glob patterns (*.parquet, **/*.parquet)
+        
         Args:
-            path: Path to Parquet file or directory.
+            path: Path to Parquet file, directory, or glob pattern.
             storage: Storage configuration.
-            filters: Partition filters [(col, op, val), ...].
-            columns: Columns to select.
+            columns: Optional columns to select (projection pushdown).
         
         Returns:
             LazyFrame with Parquet data.
@@ -242,16 +458,37 @@ class TransformExecutor:
             )
         else:
             # Local filesystem
-            # Check if path is a directory (hive partitioned) or single file
             p = Path(path)
+            
             if p.is_dir():
-                # Hive partitioned dataset
+                # Directory - scan all parquet files recursively
+                glob_pattern = str(p / "**/*.parquet")
+                logger.debug(f"Scanning directory: {glob_pattern}")
                 return pl.scan_parquet(
-                    str(p / "**/*.parquet"),
+                    glob_pattern,
                     hive_partitioning=True,
                 )
-            else:
+            elif "*" in str(p):
+                # Glob pattern provided directly
+                logger.debug(f"Scanning glob: {path}")
+                return pl.scan_parquet(
+                    path,
+                    hive_partitioning=True,
+                )
+            elif p.exists():
+                # Single file
+                logger.debug(f"Scanning file: {path}")
                 return pl.scan_parquet(path)
+            else:
+                # Path doesn't exist - try as glob in parent
+                parent = p.parent
+                if parent.exists():
+                    glob_pattern = str(parent / "*.parquet")
+                    return pl.scan_parquet(
+                        glob_pattern,
+                        hive_partitioning=True,
+                    )
+                raise FileNotFoundError(f"Input path not found: {path}")
     
     def _read_ndjson(
         self,
@@ -376,10 +613,10 @@ class TransformExecutor:
         Returns:
             Number of files written.
         """
-        # Determine compression string
-        compression = str(output_config.compression)
-        if output_config.compression == CompressionCodec.ZSTD:
-            compression = f"zstd({output_config.compression_level})"
+        # Get compression - cast to literal type that polars expects
+        compression_value = output_config.compression.value if output_config.compression else "zstd"
+        compression: ParquetCompression = compression_value  # type: ignore
+        compression_level = output_config.compression_level
         
         # Handle partitioned writes
         if output_config.partition_cols:
@@ -388,6 +625,7 @@ class TransformExecutor:
                 path=path,
                 partition_cols=output_config.partition_cols,
                 compression=compression,
+                compression_level=compression_level,
                 mode=output_config.mode,
             )
         else:
@@ -404,6 +642,7 @@ class TransformExecutor:
             df.write_parquet(
                 str(p),
                 compression=compression,
+                compression_level=compression_level,
                 row_group_size=output_config.row_group_size,
             )
             return 1
@@ -413,7 +652,8 @@ class TransformExecutor:
         df: pl.DataFrame,
         path: str,
         partition_cols: list[str],
-        compression: str,
+        compression: ParquetCompression,
+        compression_level: int,
         mode: WriteMode,
     ) -> int:
         """
@@ -423,7 +663,8 @@ class TransformExecutor:
             df: DataFrame to write.
             path: Base output path.
             partition_cols: Columns to partition by.
-            compression: Compression codec.
+            compression: Compression codec name (e.g., 'zstd', 'snappy').
+            compression_level: Compression level (mainly for zstd).
             mode: Write mode.
         
         Returns:
@@ -465,7 +706,11 @@ class TransformExecutor:
             data_cols = [c for c in group_df.columns if c not in partition_cols]
             write_df = group_df.select(data_cols)
             
-            write_df.write_parquet(str(file_path), compression=compression)
+            write_df.write_parquet(
+                str(file_path),
+                compression=compression,
+                compression_level=compression_level,
+            )
             file_count += 1
         
         return file_count

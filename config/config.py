@@ -56,6 +56,25 @@ class PathConfig(BaseModel):
     
     # ETL layer paths (relative to storage root)
     processed_dir: str = "processed"  # Base directory for processed/transformed data
+    
+    # Data tier paths (customizable naming)
+    # Default: Medallion architecture (bronze/silver/gold)
+    # Change these to use your own naming convention
+    tier_raw: str = "bronze"      # Raw data tier (ingested data)
+    tier_features: str = "silver"  # Feature-enriched data tier
+    tier_aggregates: str = "gold"  # Aggregated/business-ready data tier
+    
+    # State management paths
+    state_dir: str = "temp/state"  # Directory for state checkpoints
+
+
+class StateManagementConfig(BaseModel):
+    """Configuration for ETL state persistence and recovery."""
+    enabled: bool = Field(default=True, description="Enable state persistence")
+    auto_save_on_shutdown: bool = Field(default=True, description="Auto-save state on graceful shutdown")
+    checkpoint_interval_seconds: int = Field(default=60, description="Seconds between auto-checkpoints")
+    max_state_files: int = Field(default=5, description="Max state files to keep (for rotation)")
+    state_dir: str = Field(default="temp/state", description="Directory for state files (relative to storage root)")
 
 
 class StorageLayerConfig(BaseModel):
@@ -171,6 +190,9 @@ class ETLConfig(BaseModel):
     compression: str = "zstd"
     schedule_cron: Optional[str] = None  # e.g., "0 * * * *" for hourly
     delete_after_processing: bool = True  # Delete raw segments after ETL
+    
+    # State management
+    state: StateManagementConfig = Field(default_factory=StateManagementConfig)
     
     # Channel-specific configuration
     channels: Dict[str, ChannelETLConfig] = Field(default_factory=lambda: {

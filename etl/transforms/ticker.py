@@ -11,10 +11,11 @@ Features computed:
 - Mid price
 - Volume imbalance
 - Time features (hour, day_of_week, is_weekend)
+- Rolling statistics (optional)
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import polars as pl
 
@@ -117,6 +118,10 @@ def compute_ticker_features(df: pl.LazyFrame) -> pl.LazyFrame:
         pl.col("capture_ts").dt.hour().alias("hour"),
         pl.col("capture_ts").dt.weekday().alias("day_of_week"),
         (pl.col("capture_ts").dt.weekday() >= 5).alias("is_weekend"),
+        # Partition columns for Hive-style partitioning
+        pl.col("capture_ts").dt.year().alias("year"),
+        pl.col("capture_ts").dt.month().alias("month"),
+        pl.col("capture_ts").dt.day().alias("day"),
     ])
     
     return df
@@ -171,3 +176,49 @@ def compute_ticker_rolling_features(
         )
     
     return result
+
+def create_ticker_feature_config(
+    input_path: str,
+    output_path: str,
+    partition_cols: Optional[list[str]] = None,
+) -> "TransformConfig":
+    """
+    Create a standard configuration for ticker feature transform.
+    
+    Args:
+        input_path: Path to bronze ticker data
+        output_path: Path to write silver ticker features
+        partition_cols: Partition columns (default: exchange, symbol, year, month, day)
+    
+    Returns:
+        TransformConfig ready to use with TickerFeatureTransform
+    """
+    from etl.core.config import InputConfig, OutputConfig, TransformConfig
+    from etl.core.enums import CompressionCodec, DataFormat, WriteMode
+    
+    if partition_cols is None:
+        partition_cols = ["exchange", "symbol", "year", "month", "day"]
+    
+    return TransformConfig(
+        name="ticker_features",
+        description="Extract features from bronze ticker data",
+        inputs={
+            "ticker": InputConfig(
+                name="ticker",
+                path=input_path,
+                format=DataFormat.PARQUET,
+                partition_cols=partition_cols,
+            ),
+        },
+        outputs={
+            "silver": OutputConfig(
+                name="silver",
+                path=output_path,
+                format=DataFormat.PARQUET,
+                partition_cols=partition_cols,
+                mode=WriteMode.OVERWRITE_PARTITION,
+                compression=CompressionCodec.ZSTD,
+                compression_level=3,
+            ),
+        },
+    )

@@ -47,10 +47,10 @@ cp config/config.examples.yaml config/config.yaml
 python scripts/run_ingestion.py --sources ccxt
 
 # 4. Start continuous ETL + feature engineering (Terminal 2)
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 
-# 5. (Alternative) Run ETL v2 with new modular framework
-python scripts/run_etl_v2.py --channel orderbook
+# 5. (Alternative) Run batch feature engineering
+python scripts/etl/run_orderbook_features.py --input data/raw/ready/ccxt/orderbook --output data/processed
 
 # 6. Start local → S3 sync (Terminal 3, optional)
 python storage/sync.py upload processed/ccxt/ s3://my-bucket/processed/ccxt/
@@ -67,7 +67,7 @@ python scripts/check_health.py
 
 **Typical Production Setup:**
 - **Terminal 1**: `run_ingestion.py` (continuous WebSocket collection → Bronze Parquet)
-- **Terminal 2**: `run_etl_watcher.py` or `run_etl_v2.py` (near-real-time feature engineering)
+- **Terminal 2**: `scripts/etl/run_watcher.py` (near-real-time feature engineering)
 - **Terminal 3**: Periodic `storage/sync.py` (local → S3 backup)
 - **Terminal 4**: Daily `run_compaction.py` (merge small files)
 
@@ -167,16 +167,26 @@ Daedalus follows a **Medallion Architecture** (Bronze → Silver → Gold) that 
 
 Daedalus has two ETL approaches:
 
-### Option 1: Legacy Pipeline (`run_etl_watcher.py`)
-- Uses `etl/parquet_etl_pipeline.py` monolith
-- Full stateful feature computation (OFI, TFI, MLOFI, Kyle's Lambda, VPIN)
-- Mature and battle-tested
+### Option 1: Modular Framework (recommended)
+- Uses `etl/core/`, `etl/transforms/`, `etl/features/`
+- Batch runners in `scripts/etl/`:
+  - `run_orderbook_features.py` (supports `--trades` to compute TFI correctly)
+  - `run_trades_features.py` (with bar aggregation support)
+  - `run_ticker_features.py` (with optional rolling stats)
+  - `run_watcher.py` for continuous processing of `data/raw/ready/*`
+- **State Management**: `etl/utils/state_manager.py` provides:
+  - Automatic checkpoint on SIGINT/SIGTERM (graceful shutdown)
+  - Periodic background checkpointing (configurable interval)
+  - State file rotation (keeps N recent backups)
+- Checkpoint/state files default under `storage.paths.state_dir` (default: `data/temp/state/`)
+- **Tier naming**: Output folder names configurable via `storage.paths.tier_*`:
+  - `tier_raw`: Bronze layer (default: "bronze")
+  - `tier_features`: Silver layer (default: "silver")
+  - `tier_aggregates`: Gold layer (default: "gold")
 
-### Option 2: New Modular Framework (`run_etl_v2.py`) 
-- Uses modular `etl/features/`, `etl/transforms/`, `etl/core/` structure
-- Cleaner separation of concerns
-- Loads parameters from `config.yaml` automatically
-- Research-optimized defaults
+### Option 2: Legacy Pipeline (compat)
+- Older monolithic runners and pipeline code exist for compatibility, but the recommended path is the modular framework under `scripts/etl/`.
+- Legacy files archived in `etl/features/archived/` for reference.
 
 ### Research-Optimized Parameters
 
@@ -216,7 +226,7 @@ Both pipelines support these research-derived settings (configurable in `config.
 - ✅ **Advanced feature engineering**: 60+ microstructure features from orderbooks
 - ✅ **Multi-output pipelines**: High-frequency features + bar aggregates
 - ✅ **Config-driven**: YAML configuration, no code changes needed
-- ✅ **Production-ready**: Logging, stats, graceful shutdown, health checks
+- ✅ **Production-ready**: Logging, stats, graceful shutdown with state persistence, health checks
 - ✅ **Research-optimized**: Parameters tuned per academic literature
 
 ---
@@ -347,7 +357,7 @@ Collect real-time market data from multiple exchanges:
 python scripts/run_ingestion.py --source ccxt
 
 # Or run all configured sources
-python scripts/run_ingestion.py
+python scripts/etl/run_watcher.py --poll-interval 30
 ```
 
 **Output**:
@@ -365,7 +375,7 @@ Press Ctrl+C to stop
 Process segments automatically as they close:
 
 ```bash
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 ```
 
 Polls `ready/` every 30 seconds and processes new segments.
@@ -493,9 +503,19 @@ Daedalus/
 │   │   ├── multi_output_pipeline.py
 │   │   └── ccxt_segment_pipeline.py
 │   ├── features/           # Feature engineering
-│   │   ├── snapshot.py     # Structural features
-│   │   ├── streaming.py    # Rolling statistics
-│   │   └── state.py        # Symbol state management
+│   │   ├── orderbook.py    # Vectorized orderbook features
+│   │   ├── stateful.py     # Stateful (sequential) features: OFI/MLOFI/TFI/Kyle/VPIN
+│   │   ├── streaming.py    # Rolling statistics primitives
+│   │   └── archived/       # Legacy files (snapshot.py, state.py) - deprecated
+│   ├── transforms/         # Channel transforms
+│   │   ├── ticker.py       # Ticker feature transform
+│   │   ├── trades.py       # Trades feature transform
+│   │   ├── orderbook.py    # Orderbook feature transform
+│   │   └── bars.py         # Bar aggregation
+│   ├── utils/              # ETL utilities
+│   │   ├── state_manager.py # Checkpoint/resume + graceful shutdown
+│   │   ├── compaction.py   # File compaction
+│   │   └── crud.py         # CRUD operations
 │   ├── repartitioner.py    # Compaction & repartitioning
 │   ├── parquet_crud.py     # CRUD operations
 │   └── job.py              # ETL orchestration
@@ -511,10 +531,14 @@ Daedalus/
 ├── scripts/                # Entry points
 │   ├── run_ingestion.py    # Start ingestion
 │   ├── run_etl.py          # Run ETL (manual)
-│   ├── run_etl_watcher.py  # Run ETL (continuous)
 │   ├── run_compaction.py   # Compact Parquet files
 │   ├── check_health.py     # Health check
-│   └── query_parquet.py    # Query examples
+│   ├── query_parquet.py    # Query examples
+│   └── etl/                # ETL scripts
+│       ├── run_orderbook_features.py  # Batch orderbook features
+│       ├── run_trades_features.py     # Batch trades features
+│       ├── run_ticker_features.py     # Batch ticker features
+│       └── run_watcher.py             # Continuous ETL watcher
 │
 └── tests/                  # Test suite
 ```
@@ -648,7 +672,7 @@ python scripts/run_compaction.py data/processed/ccxt/orderbook/bars \
 python scripts/run_ingestion.py --source ccxt
 
 # Terminal 2: Continuous ETL (always running)
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 
 # Terminal 3: Monitor health (periodic)
 watch -n 300 python scripts/check_health.py
@@ -686,7 +710,7 @@ After=network.target
 Type=simple
 User=youruser
 WorkingDirectory=/path/to/Daedalus
-ExecStart=/usr/bin/python3 scripts/run_etl_watcher.py --poll-interval 30
+ExecStart=/usr/bin/python3 scripts/etl/run_watcher.py --poll-interval 30
 Restart=always
 RestartSec=10
 

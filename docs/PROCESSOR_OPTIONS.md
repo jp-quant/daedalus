@@ -10,7 +10,7 @@ config.yaml
     ↓
 ETLConfig (Pydantic)
     ↓
-scripts/run_etl_v2.py (batch runner)
+scripts/etl/run_orderbook_features.py (batch runner)
   ↓
 etl/features/orderbook.py (vectorized structural + rolling)
 etl/features/stateful.py (sequential stateful features, optional)
@@ -45,7 +45,7 @@ The orderbook path consumes the following keys via `processor_options`:
 ### Stateful Feature Settings (Optional)
 
 - **`enable_stateful`** (bool, default: `true`)
-  - If true, `scripts/run_etl_v2.py` will compute sequential stateful features via `etl/features/stateful.py`
+  - If true, `scripts/etl/run_orderbook_features.py` will compute sequential stateful features via `etl/features/stateful.py`
 
 - **`ofi_levels`** (int, default: 10)
   - Number of levels used for Order Flow Imbalance (OFI) calculation
@@ -126,7 +126,7 @@ The processor supports backward compatibility for renamed parameters:
 ### Code Locations
 
 - **Configuration model**: `config/config.py` - `ChannelETLConfig.processor_options`
-- **Batch runner**: `scripts/run_etl_v2.py`
+- **Batch runner**: `scripts/etl/run_orderbook_features.py`
 - **Vectorized orderbook features**: `etl/features/orderbook.py`
 - **Stateful orderbook features**: `etl/features/stateful.py`
 

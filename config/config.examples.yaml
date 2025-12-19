@@ -169,6 +169,15 @@ storage:
     ready_subdir: "ready"        # Ready for ETL: {base_dir}/{raw_dir}/{ready_subdir}/{source}/
     processing_subdir: "processing"  # ETL in-progress
     processed_dir: "processed"   # Processed data: {base_dir}/{processed_dir}/{source}/
+    
+    # Medallion architecture tier names (bronze → silver → gold)
+    # Customize these to match your naming convention
+    tier_raw: "bronze"           # Raw data tier (landing zone)
+    tier_features: "silver"      # Feature-extracted data tier
+    tier_aggregates: "gold"      # Aggregated/final data tier
+    
+    # State management directory (relative to base_dir)
+    state_dir: "temp/state"      # ETL state persistence
 
 # =============================================================================
 # DATA SOURCES
@@ -328,6 +337,13 @@ etl:
   compression: "zstd"            # Parquet compression (snappy, gzip, zstd)
   schedule_cron: null              # Optional: "0 * * * *" for hourly ETL
   delete_after_processing: true    # Delete raw segments after successful ETL
+  
+  # State management for checkpoint/resume and graceful shutdown
+  state:
+    enabled: true                         # Enable state persistence
+    checkpoint_interval_seconds: 300      # Auto-save state every N seconds
+    max_state_files: 5                    # Keep N recent state backups
+    auto_save_on_shutdown: true           # Save state on SIGINT/SIGTERM
   
   # Channel-specific ETL configuration
   channels:

@@ -147,7 +147,7 @@ config/
 python scripts/run_ingestion.py --sources ccxt
 
 # Terminal 2: ETL + Feature Engineering (24/7)
-python scripts/run_etl_watcher.py --poll-interval 30
+python scripts/etl/run_watcher.py --poll-interval 30
 
 # Terminal 3: Cloud Sync (periodic)
 python storage/sync.py upload \

@@ -248,6 +248,12 @@ class StatefulFeatureProcessor:
             ofi = self._compute_ofi(best_bid, best_ask, bid_size, ask_size)
             mlofi = self._compute_mlofi(current_bids, current_asks)
         
+        # Primary feature names (used by downstream code)
+        features["ofi"] = ofi
+        features["mlofi"] = mlofi
+        features["log_return"] = log_ret
+        
+        # Also provide step-suffixed versions for clarity in analysis
         features["ofi_step"] = ofi
         features["mlofi_step"] = mlofi
         features["log_return_step"] = log_ret

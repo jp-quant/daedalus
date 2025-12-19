@@ -113,7 +113,7 @@ The pipeline splits the processor's output into two distinct Parquet streams.
 
 ## 5. Operational Logic
 
-### Continuous Watcher (`run_etl_watcher.py`)
+### Continuous Watcher (`scripts/etl/run_watcher.py`)
 *   **Persistence**: The `SymbolState` objects persist in memory as long as the watcher process runs. This ensures continuity of rolling stats across file segments.
 *   **Gap Handling**: If data ingestion gaps occur, the time-based eviction logic in `SymbolState` automatically clears old buffer data, effectively resetting the stats after a "warm-up" period (equal to the max horizon, e.g., 60s).
 
