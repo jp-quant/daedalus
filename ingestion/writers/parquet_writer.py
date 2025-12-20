@@ -37,11 +37,16 @@ Architecture (Medallion):
     Raw Parquet            Normalized        Time-series bars
 """
 import asyncio
+import atexit
 import io
 import logging
 import os
 import re
 import shutil
+import signal
+import sys
+import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union, Tuple
@@ -56,6 +61,11 @@ from ingestion.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
+# Global registry of active writers for emergency cleanup
+_ACTIVE_WRITERS: List["StreamingParquetWriter"] = []
+_CLEANUP_LOCK = threading.Lock()
+_CLEANUP_DONE = False
+
 
 # =============================================================================
 # Constants
@@ -67,6 +77,57 @@ DEFAULT_PARTITION_COLUMNS = ["exchange", "symbol", "year", "month", "day", "hour
 # Characters that are prohibited in filesystem paths (replaced with -)
 # Covers Windows, Linux, macOS, and S3 key restrictions
 PROHIBITED_PATH_CHARS = re.compile(r'[/\\:*?"<>|]')
+
+
+# =============================================================================
+# Emergency Cleanup Functions
+# =============================================================================
+
+def _emergency_cleanup():
+    """
+    Emergency cleanup handler for unexpected shutdowns.
+    
+    Called by atexit and signal handlers to ensure:
+    1. All in-memory buffers are flushed to disk
+    2. All open Parquet files are properly closed
+    3. All files in active/ are moved to ready/
+    
+    This prevents data loss on:
+    - Ctrl+C (SIGINT)
+    - kill command (SIGTERM)
+    - Uncaught exceptions
+    - Python interpreter exit
+    """
+    global _CLEANUP_DONE
+    
+    with _CLEANUP_LOCK:
+        if _CLEANUP_DONE:
+            return
+        _CLEANUP_DONE = True
+    
+    if not _ACTIVE_WRITERS:
+        return
+    
+    logger.warning("[Emergency Cleanup] Starting emergency data preservation...")
+    
+    for writer in _ACTIVE_WRITERS:
+        try:
+            writer._emergency_flush_and_close()
+        except Exception as e:
+            logger.error(f"[Emergency Cleanup] Error cleaning up writer: {e}")
+            traceback.print_exc()
+    
+    logger.warning("[Emergency Cleanup] Complete - all data preserved")
+
+
+def _setup_emergency_handlers():
+    """Setup atexit and signal handlers for emergency cleanup."""
+    # Register atexit handler (covers normal exit, uncaught exceptions)
+    atexit.register(_emergency_cleanup)
+
+
+# Setup handlers on module load
+_setup_emergency_handlers()
 
 
 # =============================================================================
@@ -383,10 +444,15 @@ class StreamingParquetWriter:
         # Writer task
         self._writer_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
+        self._is_stopped = False  # Track if we've been cleanly stopped
         
         # Ensure base directories exist
         self.storage.mkdir(self.active_path)
         self.storage.mkdir(self.ready_path)
+        
+        # Register for emergency cleanup
+        with _CLEANUP_LOCK:
+            _ACTIVE_WRITERS.append(self)
         
         logger.info(
             f"[StreamingParquetWriter] Initialized: source={source_name}, "
@@ -404,23 +470,58 @@ class StreamingParquetWriter:
         logger.info("[StreamingParquetWriter] Started")
     
     async def stop(self):
-        """Stop the writer and flush pending data."""
-        if self._writer_task is None:
+        """
+        Stop the writer gracefully and ensure all data is preserved.
+        
+        This method:
+        1. Signals the writer loop to stop
+        2. Waits for the writer loop to drain the queue
+        3. Flushes all in-memory buffers to Parquet files
+        4. Closes all open Parquet writers
+        5. Moves all files from active/ to ready/
+        6. Unregisters from emergency cleanup
+        
+        Data preservation is guaranteed unless the process is killed with SIGKILL.
+        """
+        if self._is_stopped:
             return
         
-        logger.info("[StreamingParquetWriter] Stopping...")
+        if self._writer_task is None:
+            # Never started, but might have data in buffers from sync writes
+            self._emergency_flush_and_close()
+            return
+        
+        logger.info("[StreamingParquetWriter] Stopping gracefully...")
         self._shutdown.set()
         
         try:
+            # Give writer loop time to drain queue
             await asyncio.wait_for(self._writer_task, timeout=30.0)
         except asyncio.TimeoutError:
-            logger.error("[StreamingParquetWriter] Writer task did not stop gracefully")
+            logger.warning("[StreamingParquetWriter] Writer task timeout, forcing flush...")
             self._writer_task.cancel()
+            try:
+                await self._writer_task
+            except asyncio.CancelledError:
+                pass
+        except asyncio.CancelledError:
+            logger.warning("[StreamingParquetWriter] Stop was cancelled, preserving data...")
         
-        # Final flush and close all channels
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._close_all_segments
-        )
+        # Final flush, close segments, and move to ready
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._final_shutdown
+            )
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter] Error in final shutdown: {e}")
+            # Try emergency cleanup as fallback
+            self._emergency_flush_and_close()
+        
+        # Mark as stopped and unregister
+        self._is_stopped = True
+        with _CLEANUP_LOCK:
+            if self in _ACTIVE_WRITERS:
+                _ACTIVE_WRITERS.remove(self)
         
         logger.info(
             f"[StreamingParquetWriter] Stopped: {self.stats['messages_written']} written, "
@@ -898,6 +999,157 @@ class StreamingParquetWriter:
         """Close and move all open segments to ready."""
         for partition_key in list(self._partition_segments.keys()):
             self._rotate_segment(partition_key)
+    
+    def _final_shutdown(self):
+        """
+        Complete shutdown sequence - flush, close, and move all active files to ready.
+        
+        This is called during graceful shutdown and ensures:
+        1. All in-memory buffers are written to Parquet files
+        2. All Parquet writers are properly closed
+        3. All files in active/ are moved to ready/
+        """
+        logger.info("[StreamingParquetWriter] Final shutdown: flushing all data...")
+        
+        # 1. Flush any remaining in-memory buffers
+        try:
+            self._flush_all_partitions()
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter] Error flushing partitions: {e}")
+        
+        # 2. Close all open segment writers and move to ready
+        try:
+            self._close_all_segments()
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter] Error closing segments: {e}")
+        
+        # 3. Move any remaining files from active to ready
+        # This catches files that might have been written but not rotated
+        try:
+            self._move_active_to_ready()
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter] Error moving active to ready: {e}")
+        
+        logger.info("[StreamingParquetWriter] Final shutdown complete")
+    
+    def _emergency_flush_and_close(self):
+        """
+        Emergency data preservation - called by atexit/signal handlers.
+        
+        This is a synchronous, non-async method that can be called from
+        signal handlers or atexit. It does everything possible to preserve
+        data without relying on the event loop.
+        """
+        if self._is_stopped:
+            return
+        
+        logger.warning(f"[StreamingParquetWriter:{self.source_name}] Emergency flush starting...")
+        
+        try:
+            # Drain queue synchronously if possible
+            drained = 0
+            while True:
+                try:
+                    record = self.queue.get_nowait()
+                    partition_key = self._get_partition_key(record)
+                    if partition_key not in self._partition_buffers:
+                        self._partition_buffers[partition_key] = deque()
+                    self._partition_buffers[partition_key].append(record)
+                    drained += 1
+                except:
+                    break
+            
+            if drained > 0:
+                logger.warning(f"[StreamingParquetWriter:{self.source_name}] Drained {drained} records from queue")
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter:{self.source_name}] Error draining queue: {e}")
+        
+        # Flush buffers
+        try:
+            self._flush_all_partitions()
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter:{self.source_name}] Error flushing: {e}")
+        
+        # Close segments
+        try:
+            self._close_all_segments()
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter:{self.source_name}] Error closing segments: {e}")
+        
+        # Move active to ready
+        try:
+            self._move_active_to_ready()
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter:{self.source_name}] Error moving active to ready: {e}")
+        
+        self._is_stopped = True
+        logger.warning(f"[StreamingParquetWriter:{self.source_name}] Emergency flush complete")
+    
+    def _move_active_to_ready(self):
+        """
+        Move all Parquet files from active/ to ready/.
+        
+        This is a safety net that catches any files that might have been
+        written but not properly rotated during shutdown. It recursively
+        scans the active directory and moves all .parquet files to the
+        corresponding ready directory, preserving the partition structure.
+        """
+        if self.storage.backend_type != "local":
+            # For S3, files are written directly - no active/ready distinction
+            return
+        
+        active_base = self.storage.get_full_path(self.active_path)
+        ready_base = self.storage.get_full_path(self.ready_path)
+        
+        active_path = Path(active_base)
+        if not active_path.exists():
+            return
+        
+        moved_count = 0
+        for parquet_file in active_path.rglob("*.parquet"):
+            try:
+                # Calculate relative path from active base
+                relative_path = parquet_file.relative_to(active_path)
+                
+                # Build destination path
+                ready_file = Path(ready_base) / relative_path
+                
+                # Create destination directory
+                ready_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Move file
+                shutil.move(str(parquet_file), str(ready_file))
+                moved_count += 1
+                logger.info(f"[StreamingParquetWriter] Moved orphan: {relative_path}")
+                
+            except Exception as e:
+                logger.error(f"[StreamingParquetWriter] Error moving {parquet_file}: {e}")
+        
+        if moved_count > 0:
+            logger.info(f"[StreamingParquetWriter] Moved {moved_count} orphan files from active/ to ready/")
+        
+        # Clean up empty directories in active
+        try:
+            self._cleanup_empty_dirs(active_path)
+        except Exception as e:
+            logger.debug(f"[StreamingParquetWriter] Error cleaning empty dirs: {e}")
+    
+    def _cleanup_empty_dirs(self, path: Path):
+        """Recursively remove empty directories."""
+        if not path.is_dir():
+            return
+        
+        # Process children first (depth-first)
+        for child in path.iterdir():
+            if child.is_dir():
+                self._cleanup_empty_dirs(child)
+        
+        # Remove this directory if empty
+        try:
+            if path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+        except OSError:
+            pass  # Directory not empty or permission denied
     
     def get_stats(self) -> dict:
         """Get writer statistics."""

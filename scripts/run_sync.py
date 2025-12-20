@@ -64,6 +64,9 @@ def get_default_sync_paths(source: Optional[str] = None, include_raw: bool = Fal
     """
     Get default paths to sync based on source.
     
+    The paths support Directory-Aligned Partitioning structure:
+    raw/ready/{source}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/hour={h}/
+    
     Args:
         source: Optional source filter (ccxt, coinbase, etc.)
         include_raw: Include raw data paths (default: False, only processed)
@@ -74,14 +77,18 @@ def get_default_sync_paths(source: Optional[str] = None, include_raw: bool = Fal
     all_paths = []
     
     # Raw data paths (Bronze layer - already compressed and sized correctly)
+    # With Directory-Aligned Partitioning, data is organized:
+    #   raw/ready/ccxt/ticker/exchange=binanceus/symbol=BTC-USD/year=2025/month=6/day=19/hour=14/
+    # We sync at the channel level to capture all partitioned data
     if include_raw:
         all_paths.extend([
             # CCXT raw paths - NO compaction (already rotated at optimal size)
+            # Pattern matches all Parquet files under the partitioned structure
             {"source": "raw/ready/ccxt/ticker/", "compact": False, "data_source": "ccxt", "layer": "raw"},
             {"source": "raw/ready/ccxt/trades/", "compact": False, "data_source": "ccxt", "layer": "raw"},
             {"source": "raw/ready/ccxt/orderbook/", "compact": False, "data_source": "ccxt", "layer": "raw"},
             
-            # Coinbase raw paths
+            # Coinbase raw paths (same partitioned structure)
             {"source": "raw/ready/coinbase/ticker/", "compact": False, "data_source": "coinbase", "layer": "raw"},
             {"source": "raw/ready/coinbase/market_trades/", "compact": False, "data_source": "coinbase", "layer": "raw"},
             {"source": "raw/ready/coinbase/level2/", "compact": False, "data_source": "coinbase", "layer": "raw"},
@@ -107,19 +114,95 @@ def get_default_sync_paths(source: Optional[str] = None, include_raw: bool = Fal
     return all_paths
 
 
+def discover_raw_sync_paths(storage: "StorageBackend", base_path: str = "raw/ready") -> list:
+    """
+    Dynamically discover raw data paths that need syncing.
+    
+    This is useful for continuous sync on a Pi where we want to automatically
+    discover new partitions as they are created by ingestion.
+    
+    Args:
+        storage: Storage backend to scan
+        base_path: Base path to scan for data sources
+        
+    Returns:
+        List of path configurations for found channels
+    """
+    paths = []
+    
+    try:
+        # List source directories (ccxt, coinbase, etc.)
+        # list_dirs returns list of relative path strings
+        sources = storage.list_dirs(base_path)
+        
+        for source_path in sources:
+            # Normalize path separators for cross-platform compatibility
+            source_path = source_path.replace("\\", "/")
+            # Extract source name from path (e.g., "raw/ready/ccxt" -> "ccxt")
+            source_name = Path(source_path).name
+            
+            # List channels under source (ticker, trades, orderbook, etc.)
+            channels = storage.list_dirs(source_path)
+            
+            for channel_path in channels:
+                # Normalize path separators
+                channel_path = channel_path.replace("\\", "/")
+                # Extract channel name from path
+                channel_name = Path(channel_path).name
+                
+                # Add trailing slash to match partitioned structure
+                sync_path = f"{channel_path}/"
+                
+                paths.append({
+                    "source": sync_path,
+                    "compact": False,  # Raw data should not be compacted
+                    "data_source": source_name,
+                    "layer": "raw",
+                    "channel": channel_name,
+                })
+                
+    except Exception as e:
+        logger.warning(f"Error discovering paths: {e}")
+    
+    return paths
+
+
 async def run_continuous(
-    job: StorageSyncJob,
+    job: "StorageSyncJob",
     interval: int,
     shutdown_event: asyncio.Event,
+    rediscover_paths: bool = False,
+    storage: Optional["StorageBackend"] = None,
 ):
-    """Run sync job continuously until shutdown."""
+    """
+    Run sync job continuously until shutdown.
+    
+    Args:
+        job: The sync job to run
+        interval: Seconds between sync runs
+        shutdown_event: Event to signal shutdown
+        rediscover_paths: If True, rediscover paths before each sync
+        storage: Storage backend for path discovery (required if rediscover_paths)
+    """
     logger.info(f"Starting continuous sync (interval={interval}s)")
+    run_count = 0
     
     while not shutdown_event.is_set():
         try:
+            run_count += 1
+            logger.info(f"[Sync Run #{run_count}] Starting...")
+            
+            # Optionally rediscover paths for new partitions
+            if rediscover_paths and storage:
+                new_paths = discover_raw_sync_paths(storage)
+                if new_paths:
+                    job.update_paths(new_paths)
+            
             # Run sync in executor
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, job.run)
+            
+            logger.info(f"[Sync Run #{run_count}] Complete")
             
             # Wait for interval or shutdown
             try:
@@ -350,8 +433,15 @@ async def main():
         sys.exit(0 if total_failed == 0 else 1)
     
     else:
-        # Continuous mode
-        await run_continuous(job, interval, shutdown_event)
+        # Continuous mode - optionally rediscover paths for new partitions
+        rediscover = args.include_raw  # Rediscover when syncing raw data
+        await run_continuous(
+            job=job,
+            interval=interval,
+            shutdown_event=shutdown_event,
+            rediscover_paths=rediscover,
+            storage=source_storage if rediscover else None,
+        )
         logger.info("Sync job stopped")
 
 

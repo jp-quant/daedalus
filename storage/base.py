@@ -122,6 +122,24 @@ class StorageBackend(ABC):
         pass
     
     @abstractmethod
+    def list_dirs(
+        self, 
+        path: str = "",
+        recursive: bool = False
+    ) -> List[str]:
+        """
+        List subdirectories in a directory.
+        
+        Args:
+            path: Relative directory path from base_path
+            recursive: Whether to list recursively
+        
+        Returns:
+            List of directory paths (relative to base_path)
+        """
+        pass
+    
+    @abstractmethod
     def get_full_path(self, path: str) -> str:
         """
         Get full path for a relative path.
@@ -273,6 +291,40 @@ class LocalStorage(StorageBackend):
                 })
         
         return result
+    
+    def list_dirs(
+        self, 
+        path: str = "",
+        recursive: bool = False
+    ) -> List[str]:
+        """
+        List subdirectories in a directory.
+        
+        Args:
+            path: Relative directory path from base_path
+            recursive: Whether to list recursively
+        
+        Returns:
+            List of directory paths (relative to base_path)
+        """
+        full_path = self._resolve_path(path)
+        
+        if not full_path.exists():
+            return []
+        
+        result = []
+        if recursive:
+            # Recursively find all directories
+            for d in full_path.rglob("*"):
+                if d.is_dir():
+                    result.append(str(d.relative_to(self.base_dir)))
+        else:
+            # Only immediate subdirectories
+            for d in full_path.iterdir():
+                if d.is_dir():
+                    result.append(str(d.relative_to(self.base_dir)))
+        
+        return sorted(result)
     
     def get_full_path(self, path: str) -> str:
         return str(self._resolve_path(path))
@@ -494,6 +546,63 @@ class S3Storage(StorageBackend):
             return []
         
         return result
+    
+    def list_dirs(
+        self, 
+        path: str = "",
+        recursive: bool = False
+    ) -> List[str]:
+        """
+        List subdirectories in a directory (S3 prefixes).
+        
+        Args:
+            path: Relative directory path from base_path (S3 prefix)
+            recursive: Whether to list recursively
+        
+        Returns:
+            List of directory paths (relative to bucket root)
+        """
+        prefix = self._get_s3_key(path)
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        
+        result = set()  # Use set to avoid duplicates
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        
+        try:
+            if recursive:
+                # For recursive, list all objects and extract unique directory prefixes
+                for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        # Skip the prefix itself
+                        if key == prefix:
+                            continue
+                        # Extract all directory components
+                        parts = key[len(prefix):].split("/")
+                        # Add all parent directories
+                        current = prefix
+                        for part in parts[:-1]:  # Exclude the filename
+                            if part:
+                                current += part + "/"
+                                result.add(current.rstrip("/"))
+            else:
+                # Non-recursive: use Delimiter to get immediate subdirectories
+                for page in paginator.paginate(
+                    Bucket=self.bucket, 
+                    Prefix=prefix, 
+                    Delimiter="/"
+                ):
+                    # CommonPrefixes contains the subdirectory prefixes
+                    for prefix_info in page.get("CommonPrefixes", []):
+                        dir_path = prefix_info["Prefix"].rstrip("/")
+                        result.add(dir_path)
+        
+        except Exception as e:
+            logger.error(f"Error listing S3 directories in {prefix}: {e}")
+            return []
+        
+        return sorted(list(result))
     
     def get_full_path(self, path: str) -> str:
         key = self._get_s3_key(path)

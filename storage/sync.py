@@ -653,3 +653,22 @@ class StorageSyncJob:
             'last_run_time': self.last_run_time.isoformat() if self.last_run_time else None,
             'paths_configured': len(self.paths),
         }
+    
+    def update_paths(self, new_paths: List[Dict[str, Any]]):
+        """
+        Update the paths to sync (useful for dynamic discovery).
+        
+        This allows continuous sync to pick up new partitions
+        that are created after the job was started.
+        
+        Args:
+            new_paths: New list of path configurations
+        """
+        # Merge new paths, avoiding duplicates by source
+        existing_sources = {p['source'] for p in self.paths}
+        
+        for new_path in new_paths:
+            if new_path['source'] not in existing_sources:
+                self.paths.append(new_path)
+                logger.info(f"[StorageSyncJob] Added new path: {new_path['source']}")
+                existing_sources.add(new_path['source'])
