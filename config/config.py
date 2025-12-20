@@ -176,18 +176,15 @@ class IngestionConfig(BaseModel):
     # Parquet-specific options
     parquet_compression: str = Field(default="zstd", description="Parquet compression codec")
     parquet_compression_level: int = Field(default=3, description="Compression level (1-22 for zstd)")
-    # Partitioning options for raw data landing
+    # Partitioning options for raw data landing (Directory-Aligned Partitioning)
     partition_by: list[str] = Field(
-        default=["exchange", "symbol"],
+        default=["exchange", "symbol", "year", "month", "day", "hour"],
         description=(
-            "Columns to partition raw data by (Hive-style). "
-            "Default ['exchange', 'symbol'] creates paths like: "
-            "orderbook/exchange=binanceus/symbol=BTC~USDT/segment_*.parquet"
+            "Columns to partition raw data by. All partition values exist in data "
+            "AND match directory path exactly. Supports: exchange, symbol, year, "
+            "month, day, hour. Default creates paths like: "
+            "orderbook/exchange=binanceus/symbol=BTC-USD/year=2025/month=6/day=19/hour=14/"
         )
-    )
-    enable_date_partition: bool = Field(
-        default=False,
-        description="Add date partition (year/month/day) for time-based organization"
     )
 
 
