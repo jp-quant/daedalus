@@ -56,7 +56,7 @@ Build a **production-grade market data infrastructure** for **mid-frequency quan
 │ ├─ Atomic moves to processing/ (prevents double-processing)        │
 │ ├─ Feature engineering: 60+ microstructure features                │
 │ ├─ Multi-output: High-frequency features + bar aggregates          │
-│ └─ Hive-partitioned Parquet: exchange=X/symbol=Y/date=Z/           │
+│ └─ Directory-aligned partitioned Parquet: exchange=X/symbol=Y/...  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -78,8 +78,8 @@ Bronze: Raw Parquet Segments (50MB, ZSTD compressed)
     └─ raw/ready/ccxt/{channel}/segment_*.parquet   (ready for ETL)
     ↓ (ETL Job picks up)
 Silver/Gold: Feature-Engineered Parquet
-    ├─ processed/ccxt/orderbook/hf/exchange=binanceus/symbol=BTC-USDT/date=2025-12-12/*.parquet
-    └─ processed/ccxt/orderbook/bars/exchange=binanceus/symbol=BTC-USDT/date=2025-12-12/*.parquet
+    ├─ processed/ccxt/orderbook/hf/exchange=binanceus/symbol=BTC-USD/date=2025-12-12/*.parquet
+    └─ processed/ccxt/orderbook/bars/exchange=binanceus/symbol=BTC-USD/date=2025-12-12/*.parquet
 ```
 
 ---

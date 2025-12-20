@@ -245,26 +245,42 @@ ingestion:
   parquet_compression_level: 1                # Compression level (1=fast, 9=max)
   
   # ===========================================================================
-  # PARTITIONING CONFIGURATION
+  # PARTITIONING CONFIGURATION (Directory-Aligned Partitioning)
   # ===========================================================================
-  # Raw data is partitioned using Hive-style directory structure for efficient 
+  # Raw data is partitioned using directory-aligned partitioning for efficient 
   # downstream ETL processing. This allows ETL to read only relevant partitions
   # instead of scanning all data.
   #
+  # IMPORTANT: This is NOT traditional Hive partitioning!
+  #   - ALL partition column values EXIST in the Parquet data
+  #   - ALL partition column values MATCH the directory path exactly
+  #   - ALL partition values are SANITIZED (/, \, :, etc. -> -)
+  #   - year/month/day/hour are stored as int32 columns in data
+  #
+  # Default partition columns: ["exchange", "symbol", "year", "month", "day", "hour"]
+  #
   # Example structure with full partitioning:
-  #   raw/ready/ccxt/orderbook/exchange=binanceus/symbol=BTC~USDT/year=2025/month=6/day=19/
+  #   raw/ready/ccxt/orderbook/exchange=binanceus/symbol=BTC-USD/year=2025/month=6/day=19/hour=14/
   #
-  # partition_by options: ["exchange", "symbol"] (default)
-  #   - exchange: Partition by exchange name (binanceus, coinbase, etc.)
-  #   - symbol: Partition by trading pair (BTC~USDT, ETH~USDT, etc.)
+  # Supported partition columns:
+  #   - exchange: Exchange name (binanceus, coinbase, etc.) - sanitized
+  #   - symbol: Trading pair (BTC-USD, ETH-USD, etc.) - sanitized (/ -> -)
+  #   - year: Year from timestamp (int32)
+  #   - month: Month from timestamp (int32, 1-12)
+  #   - day: Day from timestamp (int32, 1-31)
+  #   - hour: Hour from timestamp (int32, 0-23)
   #
-  # enable_date_partition: true (default)
-  #   - Adds year/month/day partitions for time-based filtering
+  # Customize by removing columns you don't need:
+  #   partition_by: ["exchange", "symbol"]  # No time partitions
+  #   partition_by: ["exchange", "symbol", "year", "month", "day"]  # Daily granularity
   
   partition_by:
     - "exchange"
     - "symbol"
-  enable_date_partition: false
+    - "year"
+    - "month"
+    - "day"
+    - "hour"
 
 # =============================================================================
 # ETL LAYER SETTINGS

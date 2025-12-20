@@ -89,7 +89,7 @@ The script scans the input directory for all partitions:
 ```
 data/raw/ready/ccxt/orderbook/
 ├── exchange=binanceus/
-│   ├── symbol=BTC~USDT/
+│   ├── symbol=BTC-USDT/
 │   │   ├── year=2025/
 │   │   │   ├── month=12/
 │   │   │   │   ├── day=18/
@@ -147,12 +147,12 @@ For 4 workers: ~1.3GB total (vs ~15GB for non-batched).
 
 ## Output Structure
 
-Output follows Hive-style partitioning:
+Output follows directory-aligned partitioning (partition values match data):
 
 ```
 data/processed/silver/orderbook/
 ├── exchange=binanceus/
-│   ├── symbol=BTC~USDT/
+│   ├── symbol=BTC-USDT/
 │   │   ├── year=2025/
 │   │   │   └── month=12/
 │   │   │       └── day=18/

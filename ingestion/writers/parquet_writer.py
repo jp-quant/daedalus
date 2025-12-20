@@ -12,6 +12,26 @@ This replaces NDJSON as the raw landing format while maintaining:
 - Durability (fsync, immediate S3 upload)
 - Active/ready segregation (ETL never touches active files)
 
+Partitioning Approach (Directory-Aligned Partitioning):
+    Unlike traditional Hive partitioning where partition columns are derived
+    from the directory path and NOT stored in the data files, our approach
+    requires partition column values to EXIST in the Parquet data AND MATCH
+    the directory partition values exactly.
+    
+    This means:
+    - ALL partition columns exist in data with matching values
+    - ALL partition values are sanitized for filesystem compatibility
+    - Sanitization replaces prohibited characters (/, \\, :, etc.) with -
+    - No ambiguity between path and data - they are always consistent
+    
+    Default partition columns: [exchange, symbol, year, month, day, hour]
+    
+    Directory structure:
+        {path}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/hour={h}/
+    
+    Example: If path has `symbol=BTC-USD`, the Parquet data column `symbol`
+    will also contain "BTC-USD" (not "BTC/USD").
+
 Architecture (Medallion):
     Bronze (this writer) → Silver (clean) → Gold (features)
     Raw Parquet            Normalized        Time-series bars
@@ -20,9 +40,11 @@ import asyncio
 import io
 import logging
 import os
+import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 from collections import deque
 import json
 
@@ -35,16 +57,39 @@ from ingestion.utils.time import utc_now
 logger = logging.getLogger(__name__)
 
 
-# Schema definitions for different channel types
-# These preserve raw data while enabling efficient columnar storage
+# =============================================================================
+# Constants
+# =============================================================================
+
+# Default partition columns for directory-aligned partitioning
+DEFAULT_PARTITION_COLUMNS = ["exchange", "symbol", "year", "month", "day", "hour"]
+
+# Characters that are prohibited in filesystem paths (replaced with -)
+# Covers Windows, Linux, macOS, and S3 key restrictions
+PROHIBITED_PATH_CHARS = re.compile(r'[/\\:*?"<>|]')
+
+
+# =============================================================================
+# Schema Definitions
+# =============================================================================
 
 def _get_ticker_schema() -> pa.Schema:
-    """Schema for ticker data - preserves all CCXT unified ticker fields."""
+    """
+    Schema for ticker data - preserves all CCXT unified ticker fields.
+    
+    Partition columns (exchange, symbol, year, month, day, hour) are included
+    in the schema to ensure data matches partition directory values.
+    All partition values are sanitized for filesystem compatibility.
+    """
     return pa.schema([
         pa.field("collected_at", pa.int64()),  # Exchange timestamp (ms)
         pa.field("capture_ts", pa.timestamp("us", tz="UTC")),  # Our capture time
-        pa.field("exchange", pa.string()),
-        pa.field("symbol", pa.string()),
+        pa.field("exchange", pa.string()),  # Sanitized partition column
+        pa.field("symbol", pa.string()),  # Sanitized partition column
+        pa.field("year", pa.int32()),  # Partition column
+        pa.field("month", pa.int32()),  # Partition column
+        pa.field("day", pa.int32()),  # Partition column
+        pa.field("hour", pa.int32()),  # Partition column
         pa.field("bid", pa.float64()),
         pa.field("ask", pa.float64()),
         pa.field("bid_volume", pa.float64()),
@@ -60,25 +105,33 @@ def _get_ticker_schema() -> pa.Schema:
         pa.field("change", pa.float64()),
         pa.field("percentage", pa.float64()),
         pa.field("timestamp", pa.int64()),  # Exchange event timestamp
-        # Raw info preserved as JSON string for exchange-specific fields
-        pa.field("info_json", pa.string()),
+        pa.field("info_json", pa.string()),  # Raw info as JSON
     ])
 
 
 def _get_trades_schema() -> pa.Schema:
-    """Schema for trade data - one row per trade."""
+    """
+    Schema for trade data - one row per trade.
+    
+    Partition columns (exchange, symbol, year, month, day, hour) are included
+    in the schema to ensure data matches partition directory values.
+    All partition values are sanitized for filesystem compatibility.
+    """
     return pa.schema([
         pa.field("collected_at", pa.int64()),
         pa.field("capture_ts", pa.timestamp("us", tz="UTC")),
-        pa.field("exchange", pa.string()),
-        pa.field("symbol", pa.string()),
+        pa.field("exchange", pa.string()),  # Sanitized partition column
+        pa.field("symbol", pa.string()),  # Sanitized partition column
+        pa.field("year", pa.int32()),  # Partition column
+        pa.field("month", pa.int32()),  # Partition column
+        pa.field("day", pa.int32()),  # Partition column
+        pa.field("hour", pa.int32()),  # Partition column
         pa.field("trade_id", pa.string()),
         pa.field("timestamp", pa.int64()),
         pa.field("side", pa.string()),
         pa.field("price", pa.float64()),
         pa.field("amount", pa.float64()),
         pa.field("cost", pa.float64()),
-        # Raw info preserved
         pa.field("info_json", pa.string()),
     ])
 
@@ -89,8 +142,11 @@ def _get_orderbook_schema() -> pa.Schema:
     
     This is the raw landing format - not denormalized.
     ETL can later flatten to level-by-level if needed.
+    
+    Partition columns (exchange, symbol, year, month, day, hour) are included
+    in the schema to ensure data matches partition directory values.
+    All partition values are sanitized for filesystem compatibility.
     """
-    # Price/size pairs as list of structs
     level_type = pa.list_(pa.struct([
         pa.field("price", pa.float64()),
         pa.field("size", pa.float64()),
@@ -99,25 +155,39 @@ def _get_orderbook_schema() -> pa.Schema:
     return pa.schema([
         pa.field("collected_at", pa.int64()),
         pa.field("capture_ts", pa.timestamp("us", tz="UTC")),
-        pa.field("exchange", pa.string()),
-        pa.field("symbol", pa.string()),
-        pa.field("timestamp", pa.int64()),  # Exchange timestamp
-        pa.field("nonce", pa.int64()),  # Sequence number if provided
-        pa.field("bids", level_type),  # [[price, size], ...]
-        pa.field("asks", level_type),  # [[price, size], ...]
+        pa.field("exchange", pa.string()),  # Sanitized partition column
+        pa.field("symbol", pa.string()),  # Sanitized partition column
+        pa.field("year", pa.int32()),  # Partition column
+        pa.field("month", pa.int32()),  # Partition column
+        pa.field("day", pa.int32()),  # Partition column
+        pa.field("hour", pa.int32()),  # Partition column
+        pa.field("timestamp", pa.int64()),
+        pa.field("nonce", pa.int64()),
+        pa.field("bids", level_type),
+        pa.field("asks", level_type),
     ])
 
 
 def _get_generic_schema() -> pa.Schema:
-    """Fallback schema for unknown channel types - stores as JSON."""
+    """
+    Fallback schema for unknown channel types - stores as JSON.
+    
+    Partition columns (exchange, symbol, year, month, day, hour) are included
+    in the schema to ensure data matches partition directory values.
+    All partition values are sanitized for filesystem compatibility.
+    """
     return pa.schema([
         pa.field("collected_at", pa.int64()),
         pa.field("capture_ts", pa.timestamp("us", tz="UTC")),
-        pa.field("exchange", pa.string()),
-        pa.field("symbol", pa.string()),
+        pa.field("exchange", pa.string()),  # Sanitized partition column
+        pa.field("symbol", pa.string()),  # Sanitized partition column
+        pa.field("year", pa.int32()),  # Partition column
+        pa.field("month", pa.int32()),  # Partition column
+        pa.field("day", pa.int32()),  # Partition column
+        pa.field("hour", pa.int32()),  # Partition column
         pa.field("type", pa.string()),
         pa.field("method", pa.string()),
-        pa.field("data_json", pa.string()),  # Full data as JSON
+        pa.field("data_json", pa.string()),
     ])
 
 
@@ -128,6 +198,84 @@ CHANNEL_SCHEMAS = {
 }
 
 
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def sanitize_partition_value(value: Any) -> str:
+    """
+    Sanitize a partition value for filesystem compatibility.
+    
+    Replaces prohibited characters (/, \\, :, *, ?, ", <, >, |) with -.
+    This sanitization is applied to BOTH the partition path AND the actual
+    data to ensure they always match (Directory-Aligned Partitioning).
+    
+    Args:
+        value: The raw partition value (will be converted to string)
+        
+    Returns:
+        Sanitized string safe for filesystem paths
+        
+    Examples:
+        >>> sanitize_partition_value("BTC/USD")
+        'BTC-USD'
+        >>> sanitize_partition_value("exchange:test")
+        'exchange-test'
+        >>> sanitize_partition_value(2024)
+        '2024'
+    """
+    str_value = str(value) if value is not None else "unknown"
+    return PROHIBITED_PATH_CHARS.sub("-", str_value)
+
+
+def extract_datetime_components(record: Dict[str, Any]) -> Tuple[int, int, int, int]:
+    """
+    Extract year, month, day, hour from record timestamp.
+    
+    Precedence: capture_ts > timestamp > current time
+    
+    Args:
+        record: Record dictionary with timestamp fields
+        
+    Returns:
+        Tuple of (year, month, day, hour) as integers
+    """
+    capture_ts = record.get("capture_ts")
+    timestamp = record.get("timestamp")
+    
+    dt = None
+    
+    # Try capture_ts first
+    if capture_ts:
+        try:
+            if isinstance(capture_ts, str):
+                if capture_ts.endswith("Z"):
+                    capture_ts = capture_ts[:-1] + "+00:00"
+                dt = datetime.fromisoformat(capture_ts)
+            elif isinstance(capture_ts, datetime):
+                dt = capture_ts
+        except Exception:
+            pass
+    
+    # Fall back to timestamp
+    if dt is None and timestamp:
+        try:
+            ts_sec = timestamp / 1000 if timestamp > 1e12 else timestamp
+            dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
+        except Exception:
+            pass
+    
+    # Fall back to current time
+    if dt is None:
+        dt = utc_now()
+    
+    return (dt.year, dt.month, dt.day, dt.hour)
+
+
+# =============================================================================
+# StreamingParquetWriter
+# =============================================================================
+
 class StreamingParquetWriter:
     """
     Batched streaming writer for raw market data to Parquet.
@@ -137,13 +285,25 @@ class StreamingParquetWriter:
     - Batch writes to reduce I/O overhead
     - Size-based segment rotation (prevents unbounded growth)
     - Channel-based file separation (ticker, trades, orderbook)
-    - Hive-style partitioning by exchange/symbol/date
+    - Directory-aligned partitioning (configurable columns)
     - Active/ready directory segregation
     - Works with any StorageBackend
     
-    Directory structure (with partitioning):
-        {active_path}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/segment_*.parquet
-        {ready_path}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/segment_*.parquet
+    Directory-Aligned Partitioning:
+        Our approach requires partition column values to EXIST in the Parquet
+        data AND MATCH the directory partition values exactly. This differs
+        from traditional Hive partitioning where partition columns are derived
+        from paths and not stored in data files.
+        
+        Key guarantees:
+        - ALL partition columns exist in data with matching values
+        - ALL partition values are sanitized for filesystem compatibility
+        - Sanitization applies to BOTH path AND data (no ambiguity)
+        
+        Default: ["exchange", "symbol", "year", "month", "day", "hour"]
+    
+    Directory structure:
+        {path}/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/hour={h}/segment_*.parquet
     
     Comparison vs NDJSON:
     - ~5-10x smaller with ZSTD compression
@@ -165,7 +325,6 @@ class StreamingParquetWriter:
         compression: str = "zstd",
         compression_level: int = 3,
         partition_by: Optional[List[str]] = None,
-        enable_date_partition: bool = False,
     ):
         """
         Initialize streaming Parquet writer.
@@ -181,8 +340,8 @@ class StreamingParquetWriter:
             segment_max_mb: Max segment size before rotation
             compression: Parquet compression (zstd, snappy, lz4)
             compression_level: Compression level (1-22 for zstd)
-            partition_by: Columns to partition by (e.g., ["exchange", "symbol"])
-            enable_date_partition: Add year/month/day partitions
+            partition_by: Columns to partition by. Supports: exchange, symbol,
+                         year, month, day, hour. Default: all six columns.
         """
         self.storage = storage
         self.active_path = active_path
@@ -193,14 +352,15 @@ class StreamingParquetWriter:
         self.segment_max_bytes = segment_max_mb * 1024 * 1024
         self.compression = compression
         self.compression_level = compression_level
-        self.partition_by = partition_by or ["exchange", "symbol"]
-        self.enable_date_partition = enable_date_partition
+        
+        # Partition configuration - default to full partitioning
+        self.partition_by = partition_by if partition_by is not None else DEFAULT_PARTITION_COLUMNS.copy()
         
         # Bounded queue for backpressure
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_maxsize)
         
         # Per-partition buffers and segment tracking
-        # Key: (channel, exchange, symbol, date) tuple
+        # Key: tuple of partition values based on partition_by
         self._partition_buffers: Dict[tuple, deque] = {}
         self._partition_segments: Dict[tuple, Dict[str, Any]] = {}
         self._partition_sizes: Dict[tuple, int] = {}
@@ -232,7 +392,7 @@ class StreamingParquetWriter:
             f"[StreamingParquetWriter] Initialized: source={source_name}, "
             f"compression={compression}:{compression_level}, segment_max_mb={segment_max_mb}"
         )
-        logger.info(f"[StreamingParquetWriter] Partitioning: {self.partition_by}, date_partition={enable_date_partition}")
+        logger.info(f"[StreamingParquetWriter] Partitioning by: {self.partition_by}")
     
     async def start(self):
         """Start the writer background task."""
@@ -334,49 +494,71 @@ class StreamingParquetWriter:
             None, self._flush_all_partitions
         )
     
+    def _extract_partition_values(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract all partition values from a record.
+        
+        Returns a dictionary with sanitized values for all partition columns.
+        This ensures both path and data use identical values.
+        
+        Args:
+            record: Raw record dictionary
+            
+        Returns:
+            Dictionary mapping partition column names to sanitized values
+        """
+        # Extract datetime components (always needed for schema)
+        year, month, day, hour = extract_datetime_components(record)
+        
+        # Build partition values dict
+        values = {
+            "exchange": sanitize_partition_value(record.get("exchange", "unknown")),
+            "symbol": sanitize_partition_value(record.get("symbol", "unknown")),
+            "year": year,
+            "month": month,
+            "day": day,
+            "hour": hour,
+        }
+        
+        return values
+    
     def _get_partition_key(self, record: Dict[str, Any]) -> tuple:
         """
-        Extract partition key from record.
+        Extract partition key tuple from record.
         
-        Returns tuple: (channel, exchange, symbol, date_str)
+        The partition key is a tuple of (channel, partition_values...) based
+        on the configured partition_by columns. All string values are sanitized.
+        
+        Args:
+            record: Raw record dictionary
+            
+        Returns:
+            Tuple: (channel, *partition_values) for use as dictionary key
         """
         channel = record.get("type", "unknown")
-        exchange = record.get("exchange", "unknown")
-        symbol = record.get("symbol", "unknown")
+        partition_values = self._extract_partition_values(record)
         
-        # Sanitize symbol for filesystem (replace / with ~)
-        symbol = symbol.replace("/", "~")
+        # Build key tuple based on configured partition columns
+        key_parts = [channel]
+        for col in self.partition_by:
+            key_parts.append(partition_values.get(col, "unknown"))
         
-        # Get date from capture_ts, timestamp, or current time
-        date_str = ""
-        if self.enable_date_partition:
-            capture_ts = record.get("capture_ts")
-            timestamp = record.get("timestamp")
+        return tuple(key_parts)
+    
+    def _partition_key_to_values(self, partition_key: tuple) -> Dict[str, Any]:
+        """
+        Convert partition key tuple back to values dictionary.
+        
+        Args:
+            partition_key: Tuple of (channel, *partition_values)
             
-            if capture_ts:
-                try:
-                    if isinstance(capture_ts, str):
-                        # Parse ISO format
-                        if capture_ts.endswith("Z"):
-                            capture_ts = capture_ts[:-1] + "+00:00"
-                        dt = datetime.fromisoformat(capture_ts)
-                    else:
-                        dt = capture_ts
-                    date_str = dt.strftime("%Y-%m-%d")
-                except Exception:
-                    date_str = utc_now().strftime("%Y-%m-%d")
-            elif timestamp:
-                try:
-                    # Convert epoch ms to datetime
-                    ts_sec = timestamp / 1000 if timestamp > 1e12 else timestamp
-                    dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
-                    date_str = dt.strftime("%Y-%m-%d")
-                except Exception:
-                    date_str = utc_now().strftime("%Y-%m-%d")
-            else:
-                date_str = utc_now().strftime("%Y-%m-%d")
-        
-        return (channel, exchange, symbol, date_str)
+        Returns:
+            Dictionary mapping column names to values
+        """
+        values = {"channel": partition_key[0]}
+        for i, col in enumerate(self.partition_by):
+            values[col] = partition_key[i + 1]
+        return values
     
     def _flush_all_partitions(self):
         """Flush all partition buffers to their respective Parquet files."""
@@ -389,13 +571,16 @@ class StreamingParquetWriter:
         if not buffer:
             return
         
-        channel, exchange, symbol, date_str = partition_key
         records = list(buffer)
         buffer.clear()
         
+        # Get partition values from key
+        pv = self._partition_key_to_values(partition_key)
+        channel = pv["channel"]
+        
         try:
-            # Convert records to PyArrow table
-            table = self._records_to_table(channel, records)
+            # Convert records to PyArrow table (includes partition column values)
+            table = self._records_to_table(channel, records, pv)
             if table is None or table.num_rows == 0:
                 return
             
@@ -422,35 +607,51 @@ class StreamingParquetWriter:
             self.stats["errors"] += 1
             logger.error(f"[StreamingParquetWriter] Error flushing {partition_key}: {e}")
     
-    def _records_to_table(self, channel: str, records: List[Dict]) -> Optional[pa.Table]:
-        """Convert raw records to PyArrow table for the given channel."""
+    def _records_to_table(self, channel: str, records: List[Dict], partition_values: Dict[str, Any]) -> Optional[pa.Table]:
+        """
+        Convert raw records to PyArrow table for the given channel.
+        
+        Transforms records to include partition column values that match
+        the partition directory structure.
+        
+        Args:
+            channel: Channel type (ticker, trades, orderbook)
+            records: List of raw records
+            partition_values: Dictionary of sanitized partition values
+            
+        Returns:
+            PyArrow Table with partition columns included
+        """
         if not records:
             return None
         
         try:
             if channel == "ticker":
-                return self._convert_ticker_records(records)
+                return self._convert_ticker_records(records, partition_values)
             elif channel == "trades":
-                return self._convert_trades_records(records)
+                return self._convert_trades_records(records, partition_values)
             elif channel == "orderbook":
-                return self._convert_orderbook_records(records)
+                return self._convert_orderbook_records(records, partition_values)
             else:
-                return self._convert_generic_records(records)
+                return self._convert_generic_records(records, partition_values)
         except Exception as e:
             logger.error(f"[StreamingParquetWriter] Error converting {channel}: {e}")
-            # Fallback to generic
-            return self._convert_generic_records(records)
+            return self._convert_generic_records(records, partition_values)
     
-    def _convert_ticker_records(self, records: List[Dict]) -> pa.Table:
-        """Convert ticker records to PyArrow table."""
+    def _convert_ticker_records(self, records: List[Dict], pv: Dict[str, Any]) -> pa.Table:
+        """Convert ticker records to PyArrow table with partition columns."""
         rows = []
         for r in records:
             data = r.get("data", {})
             rows.append({
                 "collected_at": r.get("collected_at", 0),
                 "capture_ts": self._parse_ts(r.get("capture_ts")),
-                "exchange": r.get("exchange", ""),
-                "symbol": r.get("symbol", ""),
+                "exchange": pv.get("exchange", ""),
+                "symbol": pv.get("symbol", ""),
+                "year": pv.get("year", 0),
+                "month": pv.get("month", 0),
+                "day": pv.get("day", 0),
+                "hour": pv.get("hour", 0),
                 "bid": data.get("bid"),
                 "ask": data.get("ask"),
                 "bid_volume": data.get("bidVolume"),
@@ -470,16 +671,13 @@ class StreamingParquetWriter:
             })
         return pa.Table.from_pylist(rows, schema=CHANNEL_SCHEMAS["ticker"])
     
-    def _convert_trades_records(self, records: List[Dict]) -> pa.Table:
+    def _convert_trades_records(self, records: List[Dict], pv: Dict[str, Any]) -> pa.Table:
         """Convert trades records to PyArrow table (one row per trade)."""
         rows = []
         for r in records:
             collected_at = r.get("collected_at", 0)
             capture_ts = self._parse_ts(r.get("capture_ts"))
-            exchange = r.get("exchange", "")
-            symbol = r.get("symbol", "")
             
-            # trades can be a list
             trades = r.get("data", [])
             if isinstance(trades, dict):
                 trades = [trades]
@@ -488,8 +686,12 @@ class StreamingParquetWriter:
                 rows.append({
                     "collected_at": collected_at,
                     "capture_ts": capture_ts,
-                    "exchange": exchange,
-                    "symbol": symbol,
+                    "exchange": pv.get("exchange", ""),
+                    "symbol": pv.get("symbol", ""),
+                    "year": pv.get("year", 0),
+                    "month": pv.get("month", 0),
+                    "day": pv.get("day", 0),
+                    "hour": pv.get("hour", 0),
                     "trade_id": str(trade.get("id", "")),
                     "timestamp": trade.get("timestamp", 0),
                     "side": trade.get("side", ""),
@@ -500,21 +702,24 @@ class StreamingParquetWriter:
                 })
         return pa.Table.from_pylist(rows, schema=CHANNEL_SCHEMAS["trades"])
     
-    def _convert_orderbook_records(self, records: List[Dict]) -> pa.Table:
+    def _convert_orderbook_records(self, records: List[Dict], pv: Dict[str, Any]) -> pa.Table:
         """Convert orderbook records to PyArrow table with nested bids/asks."""
         rows = []
         for r in records:
             data = r.get("data", {})
             
-            # Convert bids/asks to list of dicts for struct array
             bids = [{"price": b[0], "size": b[1]} for b in data.get("bids", [])]
             asks = [{"price": a[0], "size": a[1]} for a in data.get("asks", [])]
             
             rows.append({
                 "collected_at": r.get("collected_at", 0),
                 "capture_ts": self._parse_ts(r.get("capture_ts")),
-                "exchange": r.get("exchange", ""),
-                "symbol": r.get("symbol", ""),
+                "exchange": pv.get("exchange", ""),
+                "symbol": pv.get("symbol", ""),
+                "year": pv.get("year", 0),
+                "month": pv.get("month", 0),
+                "day": pv.get("day", 0),
+                "hour": pv.get("hour", 0),
                 "timestamp": data.get("timestamp", 0),
                 "nonce": data.get("nonce", 0),
                 "bids": bids,
@@ -522,15 +727,19 @@ class StreamingParquetWriter:
             })
         return pa.Table.from_pylist(rows, schema=CHANNEL_SCHEMAS["orderbook"])
     
-    def _convert_generic_records(self, records: List[Dict]) -> pa.Table:
+    def _convert_generic_records(self, records: List[Dict], pv: Dict[str, Any]) -> pa.Table:
         """Fallback conversion - stores full data as JSON."""
         rows = []
         for r in records:
             rows.append({
                 "collected_at": r.get("collected_at", 0),
                 "capture_ts": self._parse_ts(r.get("capture_ts")),
-                "exchange": r.get("exchange", ""),
-                "symbol": r.get("symbol", ""),
+                "exchange": pv.get("exchange", ""),
+                "symbol": pv.get("symbol", ""),
+                "year": pv.get("year", 0),
+                "month": pv.get("month", 0),
+                "day": pv.get("day", 0),
+                "hour": pv.get("hour", 0),
                 "type": r.get("type", ""),
                 "method": r.get("method", ""),
                 "data_json": json.dumps(r.get("data", {}), separators=(",", ":")),
@@ -542,7 +751,6 @@ class StreamingParquetWriter:
         if not ts_str:
             return None
         try:
-            # Handle various formats
             if ts_str.endswith("Z"):
                 ts_str = ts_str[:-1] + "+00:00"
             return datetime.fromisoformat(ts_str)
@@ -553,7 +761,6 @@ class StreamingParquetWriter:
         """Ensure a segment file is open for the partition."""
         current_hour = utc_now().strftime("%Y%m%dT%H")
         
-        # Check if we need a new segment (hour changed or no segment)
         if partition_key not in self._partition_segments or current_hour != self.current_date_hour:
             if partition_key in self._partition_segments:
                 self._rotate_segment(partition_key)
@@ -563,54 +770,56 @@ class StreamingParquetWriter:
     
     def _build_partition_path(self, base_path: str, partition_key: tuple) -> str:
         """
-        Build Hive-style partition path.
+        Build directory-aligned partition path.
         
-        Example: base/orderbook/exchange=binanceus/symbol=BTC~USDT/year=2025/month=12/day=19/
+        All partition values in path match exactly what's stored in the Parquet data.
+        Path structure follows configured partition_by columns.
+        
+        Args:
+            base_path: Base directory path
+            partition_key: Tuple of (channel, *partition_values)
+            
+        Returns:
+            Full partition directory path
         """
-        channel, exchange, symbol, date_str = partition_key
+        pv = self._partition_key_to_values(partition_key)
+        channel = pv["channel"]
         
         # Start with channel
         path = self.storage.join_path(base_path, channel)
         
-        # Add partition columns
-        if "exchange" in self.partition_by:
-            path = self.storage.join_path(path, f"exchange={exchange}")
-        if "symbol" in self.partition_by:
-            path = self.storage.join_path(path, f"symbol={symbol}")
-        
-        # Add date partitions if enabled
-        if self.enable_date_partition and date_str:
-            year, month, day = date_str.split("-")
-            path = self.storage.join_path(path, f"year={year}")
-            path = self.storage.join_path(path, f"month={int(month)}")
-            path = self.storage.join_path(path, f"day={int(day)}")
+        # Add each configured partition column
+        for col in self.partition_by:
+            value = pv.get(col, "unknown")
+            path = self.storage.join_path(path, f"{col}={value}")
         
         return path
     
     def _open_new_segment(self, partition_key: tuple):
         """Open a new segment file for the partition."""
-        channel = partition_key[0]
+        pv = self._partition_key_to_values(partition_key)
+        channel = pv["channel"]
         
         # Get counter for this hour/partition
-        counter_key = f"{self.current_date_hour}_{channel}_{partition_key[1]}_{partition_key[2]}"
+        # Use sanitized values for counter key
+        counter_key = f"{self.current_date_hour}_{channel}"
+        for col in self.partition_by:
+            counter_key += f"_{pv.get(col, 'unknown')}"
+        
         if counter_key not in self.hour_counters:
             self.hour_counters[counter_key] = 0
         self.hour_counters[counter_key] += 1
         counter = self.hour_counters[counter_key]
         
-        # Create segment name
         segment_name = f"segment_{self.current_date_hour}_{counter:05d}.parquet"
         
-        # Build partition path
         partition_path = self._build_partition_path(self.active_path, partition_key)
         self.storage.mkdir(partition_path)
         
         segment_path = self.storage.join_path(partition_path, segment_name)
         
-        # Get schema for channel
         schema = CHANNEL_SCHEMAS.get(channel, _get_generic_schema())
         
-        # Open writer
         if self.storage.backend_type == "local":
             full_path = self.storage.get_full_path(segment_path)
             writer = pq.ParquetWriter(
@@ -620,7 +829,6 @@ class StreamingParquetWriter:
                 compression_level=self.compression_level,
             )
         else:
-            # For S3, we'll buffer in memory and upload on rotation
             buffer = io.BytesIO()
             writer = pq.ParquetWriter(
                 buffer,
@@ -657,26 +865,19 @@ class StreamingParquetWriter:
         writer = segment_info["writer"]
         
         try:
-            # Close writer first
             writer.close()
             logger.debug(f"[StreamingParquetWriter] Closed writer for {partition_key}")
             
-            # Build ready path with same partition structure
             ready_partition_path = self._build_partition_path(self.ready_path, partition_key)
             self.storage.mkdir(ready_partition_path)
             ready_path = self.storage.join_path(ready_partition_path, segment_info["name"])
             
             if self.storage.backend_type == "local":
-                # Ensure paths are absolute for move operation
                 active_full = self.storage.get_full_path(segment_info["path"])
                 ready_full = self.storage.get_full_path(ready_path)
-                
-                # Use Python's shutil for reliable file move
-                import shutil
                 shutil.move(active_full, ready_full)
                 logger.debug(f"[StreamingParquetWriter] Moved {active_full} -> {ready_full}")
             else:
-                # For S3, upload the buffer
                 buffer = segment_info.get("buffer")
                 if buffer:
                     buffer.seek(0)
@@ -684,8 +885,8 @@ class StreamingParquetWriter:
             
             self.stats["rotations"] += 1
             size_mb = self._partition_sizes.get(partition_key, 0) / 1024 / 1024
-            channel = partition_key[0]
-            logger.info(f"[StreamingParquetWriter] Rotated {channel}/{partition_key[1]}/{partition_key[2]}: "
+            pv = self._partition_key_to_values(partition_key)
+            logger.info(f"[StreamingParquetWriter] Rotated {pv['channel']}/{pv.get('exchange','')}/{pv.get('symbol','')}: "
                        f"{segment_info['name']} ({size_mb:.1f} MB) -> ready/")
         
         except Exception as e:

@@ -1,50 +1,93 @@
 """
-Migrate unpartitioned raw Parquet files to Hive-style partitioned structure.
+Migrate unpartitioned raw Parquet files to Directory-Aligned Partitioned structure.
 
 This script reads existing parquet files from the old flat structure:
     raw/ready/ccxt/{channel}/segment_*.parquet
 
 And reorganizes them into partitioned directories:
-    raw/ready/ccxt/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/segment_*.parquet
+    raw/ready/ccxt/{channel}/exchange={ex}/symbol={sym}/year={y}/month={m}/day={d}/hour={h}/segment_*.parquet
+
+IMPORTANT: This follows Directory-Aligned Partitioning (NOT traditional Hive):
+    - ALL partition column values EXIST in the Parquet data
+    - ALL partition column values MATCH the directory partition values exactly
+    - ALL partition values are SANITIZED for filesystem compatibility
+    - Sanitization: prohibited chars (/, \\, :, etc.) -> -
+    - year, month, day, hour columns are ADDED to data (derived from timestamp)
+
+Uses PyArrow directly (same as ingestion parquet_writer) for robust I/O.
 
 Features:
 - Dry-run mode (default): Shows what would be done without modifying data
-- Backup mode: Copies files instead of moving them
 - Progress tracking with estimated time
 - Resume capability: Skips already-migrated files
-- Validation: Verifies data integrity after migration
+- Validation: Verifies row counts after migration
 
 Usage:
     # Dry run (default) - see what would be done
     python scripts/migrate_to_partitioned.py
 
-    # Execute migration (move files)
+    # Execute migration
     python scripts/migrate_to_partitioned.py --execute
 
-    # Execute with backup (copy instead of move)
-    python scripts/migrate_to_partitioned.py --execute --backup
+    # Execute and delete source files after successful migration
+    python scripts/migrate_to_partitioned.py --execute --delete-source
 
     # Specify custom paths
     python scripts/migrate_to_partitioned.py --source data/raw/ready/ccxt --execute
 """
 import argparse
-import shutil
+import re
 import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple, Any
 
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
-def sanitize_symbol(symbol: str) -> str:
-    """Convert symbol for filesystem safety (/ -> ~)."""
-    return symbol.replace("/", "~")
+# =============================================================================
+# Constants (must match parquet_writer.py)
+# =============================================================================
+
+# Characters that are prohibited in filesystem paths (replaced with -)
+PROHIBITED_PATH_CHARS = re.compile(r'[/\\:*?"<>|]')
+
+# Default partition columns
+DEFAULT_PARTITION_COLUMNS = ["exchange", "symbol", "year", "month", "day", "hour"]
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def sanitize_partition_value(value: Any) -> str:
+    """
+    Sanitize a partition value for filesystem compatibility.
+    
+    Replaces prohibited characters (/, \\, :, *, ?, ", <, >, |) with -.
+    This matches the ingestion parquet_writer behavior and ensures
+    partition values in data match partition directory names.
+    
+    Args:
+        value: The raw partition value (will be converted to string)
+        
+    Returns:
+        Sanitized string safe for filesystem paths
+    """
+    str_value = str(value) if value is not None else "unknown"
+    return PROHIBITED_PATH_CHARS.sub("-", str_value)
+
+
+def timestamp_to_datetime_components(timestamp_ms: int) -> Tuple[int, int, int, int]:
+    """Convert epoch milliseconds to (year, month, day, hour) tuple."""
+    dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+    return (dt.year, dt.month, dt.day, dt.hour)
 
 
 def get_partition_path(
@@ -52,69 +95,113 @@ def get_partition_path(
     channel: str,
     exchange: str,
     symbol: str,
-    date_str: str,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
 ) -> Path:
-    """Build Hive-style partition path."""
-    year, month, day = date_str.split("-")
-    safe_symbol = sanitize_symbol(symbol)
+    """
+    Build directory-aligned partition path.
     
+    All values should already be sanitized before calling this function.
+    """
     return (
         base_path
         / channel
         / f"exchange={exchange}"
-        / f"symbol={safe_symbol}"
+        / f"symbol={symbol}"
         / f"year={year}"
-        / f"month={int(month)}"
-        / f"day={int(day)}"
+        / f"month={month}"
+        / f"day={day}"
+        / f"hour={hour}"
     )
 
 
-def extract_partitions_from_file(file_path: Path) -> List[Dict]:
+def add_partition_columns(
+    table: pa.Table,
+    exchange: str,
+    symbol: str,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+) -> pa.Table:
     """
-    Read a parquet file and extract unique partition combinations.
+    Add/update partition columns in the table.
     
-    Returns list of dicts with keys: exchange, symbol, date, rows
+    Ensures all partition column values (sanitized) exist in the data
+    and match the partition directory structure.
+    
+    Args:
+        table: Source PyArrow table
+        exchange: Sanitized exchange value
+        symbol: Sanitized symbol value
+        year, month, day, hour: Date/time partition values
+    
+    Returns:
+        New table with partition columns added/updated
     """
-    try:
-        df = pl.read_parquet(file_path)
-        
-        # Extract date from timestamp or capture_ts
-        if "timestamp" in df.columns:
-            df = df.with_columns(
-                pl.from_epoch(pl.col("timestamp"), time_unit="ms")
-                .dt.date()
-                .alias("_date")
-            )
-        elif "capture_ts" in df.columns:
-            df = df.with_columns(
-                pl.col("capture_ts").dt.date().alias("_date")
-            )
+    columns = {name: table.column(name) for name in table.column_names}
+    num_rows = table.num_rows
+    
+    # Update string partition columns with sanitized values
+    columns["exchange"] = pa.array([exchange] * num_rows, type=pa.string())
+    columns["symbol"] = pa.array([symbol] * num_rows, type=pa.string())
+    
+    # Add date/time partition columns
+    columns["year"] = pa.array([year] * num_rows, type=pa.int32())
+    columns["month"] = pa.array([month] * num_rows, type=pa.int32())
+    columns["day"] = pa.array([day] * num_rows, type=pa.int32())
+    columns["hour"] = pa.array([hour] * num_rows, type=pa.int32())
+    
+    # Determine column order based on channel (match schema order)
+    if "bid" in table.column_names:
+        # Ticker schema order
+        ordered_cols = [
+            "collected_at", "capture_ts", "exchange", "symbol", 
+            "year", "month", "day", "hour",
+            "bid", "ask", "bid_volume", "ask_volume", "last", "open", "high", "low",
+            "close", "vwap", "base_volume", "quote_volume", "change", "percentage",
+            "timestamp", "info_json"
+        ]
+    elif "trade_id" in table.column_names:
+        # Trades schema order
+        ordered_cols = [
+            "collected_at", "capture_ts", "exchange", "symbol",
+            "year", "month", "day", "hour",
+            "trade_id", "timestamp", "side", "price", "amount", "cost", "info_json"
+        ]
+    elif "bids" in table.column_names:
+        # Orderbook schema order
+        ordered_cols = [
+            "collected_at", "capture_ts", "exchange", "symbol",
+            "year", "month", "day", "hour",
+            "timestamp", "nonce", "bids", "asks"
+        ]
+    else:
+        # Generic/unknown - build column order dynamically
+        ordered_cols = list(table.column_names)
+        # Insert partition columns after symbol if present
+        partition_cols = ["year", "month", "day", "hour"]
+        if "symbol" in ordered_cols:
+            idx = ordered_cols.index("symbol") + 1
+            for i, col in enumerate(partition_cols):
+                if col not in ordered_cols:
+                    ordered_cols.insert(idx + i, col)
         else:
-            # Fallback: use current date
-            today = datetime.now(timezone.utc).date()
-            df = df.with_columns(pl.lit(today).alias("_date"))
-        
-        # Group by partition columns
-        partitions = (
-            df.group_by(["exchange", "symbol", "_date"])
-            .agg(pl.len().alias("row_count"))
-            .to_dicts()
-        )
-        
-        result = []
-        for p in partitions:
-            result.append({
-                "exchange": p["exchange"],
-                "symbol": p["symbol"],
-                "date": str(p["_date"]),
-                "rows": p["row_count"],
-            })
-        
-        return result
-        
-    except Exception as e:
-        print(f"  ERROR reading {file_path}: {e}")
-        return []
+            for col in partition_cols:
+                if col not in ordered_cols:
+                    ordered_cols.append(col)
+    
+    # Build new table with ordered columns (only include columns that exist)
+    arrays = []
+    names = []
+    for col in ordered_cols:
+        if col in columns:
+            arrays.append(columns[col])
+            names.append(col)
+    
+    return pa.table(dict(zip(names, arrays)))
 
 
 def split_file_by_partitions(
@@ -122,10 +209,12 @@ def split_file_by_partitions(
     base_dest: Path,
     channel: str,
     dry_run: bool = True,
-    backup: bool = False,
 ) -> Tuple[int, int, List[str]]:
     """
-    Split a single parquet file into partitioned files.
+    Split a single parquet file into partitioned files using PyArrow.
+    
+    Adds partition columns (sanitized exchange/symbol, year/month/day/hour)
+    to the data to ensure they match the partition directory structure.
     
     Returns: (files_created, rows_processed, error_messages)
     """
@@ -134,63 +223,85 @@ def split_file_by_partitions(
     rows_processed = 0
     
     try:
-        df = pl.read_parquet(source_file)
-        original_rows = len(df)
+        # Read using PyArrow
+        table = pq.read_table(str(source_file))
+        original_rows = table.num_rows
         
-        # Extract date from timestamp or capture_ts
-        if "timestamp" in df.columns:
-            df = df.with_columns(
-                pl.from_epoch(pl.col("timestamp"), time_unit="ms")
-                .dt.date()
-                .alias("_partition_date")
-            )
-        elif "capture_ts" in df.columns:
-            df = df.with_columns(
-                pl.col("capture_ts").dt.date().alias("_partition_date")
-            )
+        if original_rows == 0:
+            return 0, 0, []
+        
+        # Extract columns for grouping
+        exchange_col = table.column("exchange").to_pylist()
+        symbol_col = table.column("symbol").to_pylist()
+        
+        # Get timestamps for date/time partitioning
+        if "timestamp" in table.column_names:
+            ts_col = table.column("timestamp").to_pylist()
         else:
-            today = datetime.now(timezone.utc).date()
-            df = df.with_columns(pl.lit(today).alias("_partition_date"))
+            ts_col = [None] * original_rows
         
-        # Get unique partition combinations
-        partitions = df.select(["exchange", "symbol", "_partition_date"]).unique()
+        # Group rows by partition key
+        # Key: (sanitized_exchange, sanitized_symbol, year, month, day, hour)
+        partition_indices: Dict[Tuple[str, str, int, int, int, int], List[int]] = defaultdict(list)
         
-        for partition in partitions.iter_rows(named=True):
-            exchange = partition["exchange"]
-            symbol = partition["symbol"]
-            date_val = partition["_partition_date"]
-            date_str = str(date_val)
+        for i in range(original_rows):
+            # Sanitize ALL string partition values
+            exchange = sanitize_partition_value(exchange_col[i])
+            symbol = sanitize_partition_value(symbol_col[i])
             
-            # Filter rows for this partition
-            partition_df = df.filter(
-                (pl.col("exchange") == exchange) &
-                (pl.col("symbol") == symbol) &
-                (pl.col("_partition_date") == date_val)
-            ).drop("_partition_date")
+            # Get date/time components
+            ts = ts_col[i]
+            if ts and ts > 0:
+                year, month, day, hour = timestamp_to_datetime_components(ts)
+            else:
+                # Fallback to current date/time
+                now = datetime.now(timezone.utc)
+                year, month, day, hour = now.year, now.month, now.day, now.hour
             
-            if len(partition_df) == 0:
-                continue
-            
+            key = (exchange, symbol, year, month, day, hour)
+            partition_indices[key].append(i)
+        
+        # Write each partition
+        for (exchange, symbol, year, month, day, hour), indices in partition_indices.items():
             # Build destination path
-            dest_dir = get_partition_path(base_dest, channel, exchange, symbol, date_str)
+            dest_dir = get_partition_path(
+                base_dest, channel, exchange, symbol, year, month, day, hour
+            )
             dest_file = dest_dir / source_file.name
             
+            # Get subset of table
+            partition_table = table.take(indices)
+            
+            # Add/update partition columns to match directory structure
+            partition_table = add_partition_columns(
+                partition_table, exchange, symbol, year, month, day, hour
+            )
+            
+            partition_rows = len(indices)
+            
             if dry_run:
-                print(f"    → {dest_file.relative_to(base_dest)} ({len(partition_df)} rows)")
+                print(f"    -> {channel}/exchange={exchange}/symbol={symbol}/.../hour={hour} ({partition_rows} rows)")
             else:
                 # Create directory and write file
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                partition_df.write_parquet(dest_file, compression="zstd", compression_level=3)
+                pq.write_table(
+                    partition_table,
+                    str(dest_file),
+                    compression="zstd",
+                    compression_level=3,
+                )
             
             files_created += 1
-            rows_processed += len(partition_df)
+            rows_processed += partition_rows
         
         # Verify row count
         if rows_processed != original_rows:
             errors.append(f"Row count mismatch: {original_rows} original vs {rows_processed} migrated")
         
     except Exception as e:
-        errors.append(f"Error processing {source_file}: {e}")
+        errors.append(f"Error processing {source_file.name}: {e}")
+        import traceback
+        traceback.print_exc()
     
     return files_created, rows_processed, errors
 
@@ -248,7 +359,6 @@ def migrate_files(
     dest_path: Path,
     files_by_channel: Dict[str, List[Path]],
     dry_run: bool = True,
-    backup: bool = False,
     delete_source: bool = False,
 ) -> Dict:
     """
@@ -259,8 +369,7 @@ def migrate_files(
         dest_path: Base path for destination (can be same as source)
         files_by_channel: Dict of channel -> file list
         dry_run: If True, only show what would be done
-        backup: If True, copy files instead of moving
-        delete_source: If True and not backup, delete source after successful migration
+        delete_source: If True, delete source after successful migration
     
     Returns:
         Migration statistics
@@ -286,7 +395,8 @@ def migrate_files(
             rate = processed / elapsed if elapsed > 0 else 0
             eta = (total_files - processed) / rate if rate > 0 else 0
             
-            print(f"  [{processed}/{total_files}] {file_path.name} (ETA: {eta:.0f}s)")
+            file_size_mb = file_path.stat().st_size / 1024 / 1024
+            print(f"  [{processed}/{total_files}] {file_path.name} ({file_size_mb:.1f} MB) ETA: {eta:.0f}s")
             
             # Split file by partitions
             files_created, rows, errors = split_file_by_partitions(
@@ -294,7 +404,6 @@ def migrate_files(
                 base_dest=dest_path,
                 channel=channel,
                 dry_run=dry_run,
-                backup=backup,
             )
             
             results["files_processed"] += 1
@@ -303,61 +412,19 @@ def migrate_files(
             results["errors"].extend(errors)
             
             # Delete source if requested and successful
-            if not dry_run and delete_source and not errors and not backup:
+            if not dry_run and delete_source and not errors:
                 try:
                     file_path.unlink()
+                    print(f"    [deleted source]")
                 except Exception as e:
                     results["errors"].append(f"Failed to delete {file_path}: {e}")
     
     return results
 
 
-def validate_migration(source_path: Path, dest_path: Path, channel: str) -> List[str]:
-    """
-    Validate that migration was successful by comparing row counts.
-    
-    Returns list of error messages (empty if successful).
-    """
-    errors = []
-    
-    # Count rows in source (flat files)
-    source_channel = source_path / channel
-    source_files = list(source_channel.glob("*.parquet"))
-    
-    if not source_files:
-        return []  # No source files to validate against
-    
-    source_rows = 0
-    for f in source_files:
-        try:
-            df = pl.read_parquet(f)
-            source_rows += len(df)
-        except Exception as e:
-            errors.append(f"Error reading source {f}: {e}")
-    
-    # Count rows in destination (partitioned files)
-    dest_channel = dest_path / channel
-    dest_files = list(dest_channel.rglob("*.parquet"))
-    
-    dest_rows = 0
-    for f in dest_files:
-        try:
-            df = pl.read_parquet(f)
-            dest_rows += len(df)
-        except Exception as e:
-            errors.append(f"Error reading dest {f}: {e}")
-    
-    if source_rows != dest_rows:
-        errors.append(f"{channel}: Row count mismatch - source={source_rows}, dest={dest_rows}")
-    else:
-        print(f"  ✓ {channel}: {source_rows} rows validated")
-    
-    return errors
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Migrate unpartitioned Parquet files to Hive-style partitioned structure",
+        description="Migrate unpartitioned Parquet files to Directory-Aligned Partitioned structure",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -379,19 +446,9 @@ def main():
         help="Actually perform the migration (default is dry-run)",
     )
     parser.add_argument(
-        "--backup",
-        action="store_true",
-        help="Keep original files (copy instead of reorganize)",
-    )
-    parser.add_argument(
         "--delete-source",
         action="store_true",
         help="Delete source files after successful migration",
-    )
-    parser.add_argument(
-        "--validate-only",
-        action="store_true",
-        help="Only validate existing migration, don't migrate",
     )
     parser.add_argument(
         "--channel",
@@ -412,12 +469,16 @@ def main():
     dry_run = not args.execute
     
     print("=" * 70)
-    print("Parquet Partition Migration Tool")
+    print("Parquet Partition Migration Tool (Directory-Aligned)")
     print("=" * 70)
     print(f"Source:      {source_path}")
     print(f"Destination: {dest_path}")
     print(f"Mode:        {'DRY RUN' if dry_run else 'EXECUTE'}")
-    print(f"Backup:      {'Yes (copy)' if args.backup else 'No (in-place)'}")
+    print()
+    print("This migration will:")
+    print("  - Sanitize ALL partition values (/, \\, :, etc. -> -)")
+    print("  - Add year, month, day, hour columns to data")
+    print("  - Ensure partition values MATCH data values exactly")
     print("=" * 70)
     
     if not source_path.exists():
@@ -446,27 +507,11 @@ def main():
     for channel, info in stats["channels"].items():
         print(f"  - {channel}: {info['files']} files ({info['size_mb']:.1f} MB)")
     
-    if args.validate_only:
-        print("\n--- Validation Mode ---")
-        all_errors = []
-        for channel in files_by_channel.keys():
-            errors = validate_migration(source_path, dest_path, channel)
-            all_errors.extend(errors)
-        
-        if all_errors:
-            print("\nValidation FAILED:")
-            for e in all_errors:
-                print(f"  ✗ {e}")
-            sys.exit(1)
-        else:
-            print("\n✓ Validation PASSED")
-            sys.exit(0)
-    
     # Confirm execution
     if not dry_run and not args.yes:
-        print("\n⚠️  WARNING: This will modify your data!")
+        print("\nWARNING: This will modify your data!")
         if args.delete_source:
-            print("⚠️  Source files will be DELETED after migration!")
+            print("WARNING: Source files will be DELETED after migration!")
         response = input("Type 'yes' to continue: ")
         if response.lower() != "yes":
             print("Aborted.")
@@ -479,7 +524,6 @@ def main():
         dest_path=dest_path,
         files_by_channel=files_by_channel,
         dry_run=dry_run,
-        backup=args.backup,
         delete_source=args.delete_source,
     )
     
@@ -490,13 +534,12 @@ def main():
     print(f"Files processed:  {results['files_processed']}")
     print(f"Files created:    {results['files_created']}")
     print(f"Rows migrated:    {results['rows_migrated']:,}")
-    print(f"Skipped:          {results['skipped']}")
     print(f"Errors:           {len(results['errors'])}")
     
     if results["errors"]:
         print("\nErrors:")
         for e in results["errors"][:10]:
-            print(f"  ✗ {e}")
+            print(f"  - {e}")
         if len(results["errors"]) > 10:
             print(f"  ... and {len(results['errors']) - 10} more")
     
