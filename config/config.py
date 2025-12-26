@@ -170,7 +170,7 @@ class IngestionConfig(BaseModel):
     queue_maxsize: int = 10000
     enable_fsync: bool = True
     auto_reconnect: bool = True
-    max_reconnect_attempts: int = 10
+    max_reconnect_attempts: int = -1  # -1 = infinite retries for 24/7 operation
     reconnect_delay: float = 5.0
     segment_max_mb: int = 100  # Max size in MB before rotating segment
     # Parquet-specific options

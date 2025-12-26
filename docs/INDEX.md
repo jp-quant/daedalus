@@ -41,6 +41,12 @@ This document provides a map of all documentation and quick access to key inform
 | [`HYBRID_STORAGE_GUIDE.md`](HYBRID_STORAGE_GUIDE.md) | Local + S3 patterns | Setting up cloud backup |
 | [`PARQUET_OPERATIONS.md`](PARQUET_OPERATIONS.md) | Parquet best practices | Optimizing storage |
 
+### Ingestion Pipeline
+
+| Document | Purpose | Read When |
+|----------|---------|-----------|
+| [`INGESTION_MEMORY_FLUSHING_REVIEW.md`](INGESTION_MEMORY_FLUSHING_REVIEW.md) | **NEW** Memory, flushing, startup migration | Production deployment/optimization |
+
 ### ETL & Data Processing
 
 | Document | Purpose | Read When |

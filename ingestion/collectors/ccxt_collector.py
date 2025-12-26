@@ -207,6 +207,7 @@ class CcxtCollector(BaseCollector):
                 # Write to log writer (non-blocking to avoid stalling the websocket loop)
                 try:
                     await self.log_writer.write(msg, block=False)
+                    self._mark_message_received()  # Track health
                 except asyncio.QueueFull:
                     logger.warning(f"[{self.source_name}] Queue full, dropping message")
                 
@@ -243,6 +244,7 @@ class CcxtCollector(BaseCollector):
                 # Write to log writer (non-blocking)
                 try:
                     await self.log_writer.write(msg, block=False)
+                    self._mark_message_received()  # Track health
                 except asyncio.QueueFull:
                     logger.warning(f"[{self.source_name}] Queue full, dropping message")
                 
@@ -350,6 +352,7 @@ class CcxtCollector(BaseCollector):
                 for msg in msgs:
                     try:
                         await self.log_writer.write(msg, block=False)
+                        self._mark_message_received()  # Track health
                     except asyncio.QueueFull:
                         pass
 

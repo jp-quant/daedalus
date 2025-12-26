@@ -7,6 +7,7 @@ All paths are relative to the storage root (local base_dir or S3 bucket).
 import io
 import logging
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Optional, List, Dict, Any, Union
 
@@ -100,6 +101,58 @@ class StorageBackend(ABC):
             True if deleted successfully
         """
         pass
+    
+    def batch_delete(
+        self,
+        paths: List[str],
+        max_workers: int = 32,
+    ) -> Dict[str, Any]:
+        """
+        Delete multiple files in parallel for optimal performance.
+        
+        This is a high-performance batch delete that works with any storage backend.
+        For S3, it uses the native batch delete API (up to 1000 objects per request).
+        For local storage, it uses parallel threads.
+        
+        Args:
+            paths: List of relative paths to delete
+            max_workers: Max parallel workers for local deletion (ignored for S3 batch)
+        
+        Returns:
+            Dict with keys:
+                - deleted: Number of files successfully deleted
+                - failed: Number of files that failed to delete
+                - errors: List of (path, error_message) tuples for failures
+        """
+        if not paths:
+            return {"deleted": 0, "failed": 0, "errors": []}
+        
+        deleted = 0
+        failed = 0
+        errors = []
+        
+        # Default implementation using parallel single deletes
+        # Subclasses can override for more efficient batch operations
+        def delete_one(path: str):
+            try:
+                if self.delete(path):
+                    return (True, path, None)
+                else:
+                    return (False, path, "Delete returned False")
+            except Exception as e:
+                return (False, path, str(e))
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(delete_one, p): p for p in paths}
+            for future in as_completed(futures):
+                success, path, error = future.result()
+                if success:
+                    deleted += 1
+                else:
+                    failed += 1
+                    errors.append((path, error))
+        
+        return {"deleted": deleted, "failed": failed, "errors": errors}
     
     @abstractmethod
     def list_files(
@@ -490,6 +543,63 @@ class S3Storage(StorageBackend):
             logger.info(f"Failed to delete {path}: {e}")
             return False
     
+    def batch_delete(
+        self,
+        paths: List[str],
+        max_workers: int = 32,
+    ) -> Dict[str, Any]:
+        """
+        Delete multiple files using S3's batch delete API.
+        
+        S3 supports deleting up to 1000 objects per request, making this
+        significantly faster than individual delete calls.
+        
+        Args:
+            paths: List of relative paths to delete
+            max_workers: Ignored for S3 (uses batch API instead)
+        
+        Returns:
+            Dict with keys: deleted, failed, errors
+        """
+        if not paths:
+            return {"deleted": 0, "failed": 0, "errors": []}
+        
+        deleted = 0
+        failed = 0
+        errors = []
+        
+        # S3 delete_objects can handle up to 1000 keys per request
+        batch_size = 1000
+        
+        for i in range(0, len(paths), batch_size):
+            batch = paths[i:i + batch_size]
+            objects_to_delete = [
+                {"Key": self._get_s3_key(p)} for p in batch
+            ]
+            
+            try:
+                response = self.s3_client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": objects_to_delete, "Quiet": False}
+                )
+                
+                # Count successful deletes
+                deleted += len(response.get("Deleted", []))
+                
+                # Track errors
+                for error in response.get("Errors", []):
+                    failed += 1
+                    errors.append((error["Key"], error.get("Message", "Unknown error")))
+                    
+            except Exception as e:
+                # If the entire batch fails, count all as failed
+                failed += len(batch)
+                for p in batch:
+                    errors.append((p, str(e)))
+                logger.error(f"Batch delete failed: {e}")
+        
+        return {"deleted": deleted, "failed": failed, "errors": errors}
+    
     def list_files(
         self, 
         path: str = "", 
@@ -700,3 +810,90 @@ class S3Storage(StorageBackend):
                     pass
             logger.error(f"Multipart upload failed for {key}: {e}")
             raise
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def batch_delete_files(
+    storage: StorageBackend,
+    paths: Optional[List[str]] = None,
+    pattern: Optional[str] = None,
+    base_path: str = "",
+    recursive: bool = True,
+    max_workers: int = 32,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """
+    Delete multiple files from storage as fast as possible.
+    
+    This is a high-level utility that can either:
+    1. Delete a specific list of paths
+    2. Find and delete files matching a pattern
+    
+    Uses the most efficient method for each storage backend:
+    - S3: Native batch delete API (1000 objects/request)
+    - Local: Parallel ThreadPoolExecutor
+    
+    Args:
+        storage: Any StorageBackend instance (LocalStorage, S3Storage, etc.)
+        paths: Explicit list of paths to delete. If provided, pattern is ignored.
+        pattern: Glob pattern to match files (e.g., "*.parquet", "**/*.tmp")
+        base_path: Base directory to search when using pattern
+        recursive: Whether to search recursively when using pattern
+        max_workers: Max parallel workers (for local storage)
+        dry_run: If True, return files that would be deleted without deleting
+    
+    Returns:
+        Dict with keys:
+            - deleted: Number of files deleted (0 if dry_run)
+            - failed: Number of files that failed to delete
+            - errors: List of (path, error_message) for failures
+            - files: List of paths that were/would be deleted
+    
+    Examples:
+        # Delete specific files
+        >>> files = storage.list_files("raw/temp/", pattern="*.tmp")
+        >>> result = batch_delete_files(storage, paths=[f["path"] for f in files])
+        
+        # Delete by pattern
+        >>> result = batch_delete_files(storage, pattern="*.tmp", base_path="raw/temp/")
+        
+        # Dry run to preview
+        >>> result = batch_delete_files(storage, pattern="**/*.parquet", dry_run=True)
+        >>> print(f"Would delete {len(result['files'])} files")
+    """
+    # Determine files to delete
+    if paths is None:
+        if pattern is None:
+            raise ValueError("Either paths or pattern must be provided")
+        # Find files matching pattern
+        files_info = storage.list_files(base_path, pattern=pattern, recursive=recursive)
+        paths = [f["path"] for f in files_info]
+    
+    result = {
+        "deleted": 0,
+        "failed": 0,
+        "errors": [],
+        "files": paths,
+    }
+    
+    if not paths:
+        return result
+    
+    if dry_run:
+        logger.info(f"[DRY RUN] Would delete {len(paths)} files")
+        return result
+    
+    # Perform deletion
+    delete_result = storage.batch_delete(paths, max_workers=max_workers)
+    result.update(delete_result)
+    result["files"] = paths
+    
+    logger.info(
+        f"Batch delete complete: {result['deleted']} deleted, "
+        f"{result['failed']} failed out of {len(paths)} files"
+    )
+    
+    return result

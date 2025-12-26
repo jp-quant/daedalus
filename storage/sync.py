@@ -131,6 +131,7 @@ class StorageSync:
         source_path: str,
         dest_path: Optional[str] = None,
         pattern: str = "**/*",
+        recursive_list_files: bool = True,
         delete_after_transfer: bool = False,
         max_workers: int = 5,
         skip_existing: bool = False,
@@ -145,6 +146,7 @@ class StorageSync:
             source_path: Path in source storage to sync from
             dest_path: Path in destination storage. If None, uses source_path.
             pattern: Glob pattern for files to sync (default: all files)
+            recursive_list_files: Recursively list files in subdirectories (default: True for partitioned data)
             delete_after_transfer: Delete source files after successful transfer
             max_workers: Number of parallel transfer threads
             skip_existing: Skip files that already exist at destination
@@ -162,7 +164,7 @@ class StorageSync:
         
         # List source files
         logger.info(f"[StorageSync] Listing files in {source_path} with pattern {pattern}")
-        source_files = self.source.list_files(source_path, pattern=pattern)
+        source_files = self.source.list_files(source_path, pattern=pattern, recursive=recursive_list_files)
         stats.files_found = len(source_files)
         
         if not source_files:

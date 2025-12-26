@@ -176,6 +176,9 @@ class IngestionPipeline:
         logger.info(f"  Active: {active_path}")
         logger.info(f"  Ready:  {ready_path}")
 
+        successful_collectors = 0
+        failed_collectors = []
+
         for exchange_id, exchange_config in self.config.ccxt.exchanges.items():
             try:
                 logger.info(f"Starting CCXT collector for {exchange_id}...")
@@ -196,11 +199,31 @@ class IngestionPipeline:
                 )
                 await ccxt_collector.start()
                 self.collectors.append(ccxt_collector)
+                successful_collectors += 1
                 
                 logger.info(f"✓ CCXT collector started for {exchange_id}")
                 
             except Exception as e:
-                logger.error(f"Failed to start CCXT collector for {exchange_id}: {e}")
+                failed_collectors.append((exchange_id, str(e)))
+                logger.error(
+                    f"✗ Failed to start CCXT collector for {exchange_id}: {e}",
+                    exc_info=True
+                )
+        
+        # Log summary
+        logger.info(
+            f"CCXT collectors: {successful_collectors} started, "
+            f"{len(failed_collectors)} failed"
+        )
+        
+        if failed_collectors:
+            logger.warning("Failed exchanges:")
+            for exchange_id, error in failed_collectors:
+                logger.warning(f"  - {exchange_id}: {error}")
+            logger.warning(
+                "Note: Failed exchanges will NOT auto-start later. "
+                "Restart the pipeline to retry."
+            )
 
     async def wait_for_shutdown(self):
         """Wait for shutdown signal."""
@@ -232,17 +255,64 @@ class IngestionPipeline:
         logger.info("Ingestion pipeline stopped")
     
     async def print_stats(self):
-        """Print statistics for all collectors and writers."""
+        """Print statistics for all collectors and writers with health indicators."""
         logger.info("=" * 80)
         logger.info("Pipeline Statistics")
         logger.info("=" * 80)
         
+        # Collector stats with health indicators
+        healthy_collectors = 0
+        unhealthy_collectors = 0
+        
         for collector in self.collectors:
             stats = collector.get_stats()
-            logger.info(f"{collector.source_name}: {stats}")
+            is_healthy = stats.get("is_healthy", False)
+            health_icon = "✓" if is_healthy else "✗"
+            
+            if is_healthy:
+                healthy_collectors += 1
+            else:
+                unhealthy_collectors += 1
+            
+            # Format stats for logging
+            connected = "🟢" if stats.get("connected") else "🔴"
+            msgs = stats.get("messages_received", 0)
+            errors = stats.get("errors", 0)
+            reconnections = stats.get("reconnections", 0)
+            uptime = stats.get("uptime_seconds", 0)
+            
+            logger.info(
+                f"{health_icon} {connected} {collector.source_name}: "
+                f"msgs={msgs:,}, errors={errors}, reconnects={reconnections}, "
+                f"uptime={uptime:.0f}s"
+            )
+            
+            # Show last error if present
+            if stats.get("last_error"):
+                logger.warning(f"  └─ Last error: {stats['last_error']}")
+            
+            # Show seconds since last message if available
+            if stats.get("seconds_since_last_message") is not None:
+                secs = stats["seconds_since_last_message"]
+                if secs > 60:
+                    logger.warning(f"  └─ No messages for {secs}s")
         
+        # Writer stats
         for name, writer in self.writers.items():
             stats = writer.get_stats()
-            logger.info(f"{name} writer: {stats}")
+            logger.info(
+                f"Writer {name}: written={stats.get('messages_written', 0):,}, "
+                f"queue={stats.get('queue_size', 0)}, flushes={stats.get('flushes', 0)}"
+            )
+        
+        # Health summary
+        total_collectors = len(self.collectors)
+        logger.info("=" * 80)
+        logger.info(
+            f"Health: {healthy_collectors}/{total_collectors} collectors healthy"
+        )
+        
+        if unhealthy_collectors > 0:
+            logger.warning(f"⚠️  {unhealthy_collectors} collector(s) unhealthy - check logs")
         
         logger.info("=" * 80)

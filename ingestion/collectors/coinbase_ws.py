@@ -178,7 +178,7 @@ class CoinbaseCollector(BaseCollector):
                     # Push to log writer (non-blocking)
                     try:
                         await self.log_writer.write(record, block=False)
-                        self.stats["messages_received"] += 1
+                        self._mark_message_received()  # Track health
                     except asyncio.QueueFull:
                         logger.warning(
                             "[CoinbaseCollector] LogWriter queue full - "

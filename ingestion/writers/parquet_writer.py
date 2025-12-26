@@ -461,10 +461,24 @@ class StreamingParquetWriter:
         logger.info(f"[StreamingParquetWriter] Partitioning by: {self.partition_by}")
     
     async def start(self):
-        """Start the writer background task."""
+        """
+        Start the writer background task.
+        
+        On startup, migrates any orphan files from active/ to ready/
+        before starting the writer loop. This ensures data safety
+        if the previous run crashed or was killed.
+        """
         if self._writer_task is not None:
             logger.warning("[StreamingParquetWriter] Already started")
             return
+        
+        # Migrate orphan files from previous run
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._move_active_to_ready
+            )
+        except Exception as e:
+            logger.error(f"[StreamingParquetWriter] Error migrating orphan files on startup: {e}")
         
         self._writer_task = asyncio.create_task(self._writer_loop())
         logger.info("[StreamingParquetWriter] Started")
