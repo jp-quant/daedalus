@@ -1,0 +1,53 @@
+# Daedalus Market Data Pipeline - systemd Service
+# 
+# Installation:
+#   1. Copy this file to /etc/systemd/system/daedalus.service
+#   2. Edit the paths below to match your installation
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable daedalus
+#   5. sudo systemctl start daedalus
+#
+# Management:
+#   sudo systemctl status daedalus    # Check status
+#   sudo systemctl stop daedalus      # Stop
+#   sudo systemctl restart daedalus   # Restart
+#   journalctl -u daedalus -f         # Follow logs
+
+[Unit]
+Description=Daedalus Market Data Pipeline
+Documentation=https://github.com/your-repo/market-data-pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=pi
+Group=pi
+
+# IMPORTANT: Update these paths to match your installation
+WorkingDirectory=/home/pi/market-data-pipeline
+ExecStart=/home/pi/market-data-pipeline/scripts/run_pipeline.sh
+ExecStop=/home/pi/market-data-pipeline/scripts/run_pipeline.sh --stop
+
+# Restart policy - restart on failure with delay
+Restart=on-failure
+RestartSec=30
+
+# Resource limits to prevent Pi4 OOM
+MemoryMax=2G
+MemoryHigh=1.5G
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment=MALLOC_ARENA_MAX=2
+
+# Logging
+StandardOutput=append:/home/pi/market-data-pipeline/logs/systemd.log
+StandardError=append:/home/pi/market-data-pipeline/logs/systemd.log
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

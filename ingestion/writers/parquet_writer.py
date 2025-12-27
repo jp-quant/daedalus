@@ -46,6 +46,7 @@ import shutil
 import signal
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +74,11 @@ _CLEANUP_DONE = False
 
 # Default partition columns for directory-aligned partitioning
 DEFAULT_PARTITION_COLUMNS = ["exchange", "symbol", "year", "month", "day", "hour"]
+
+# Maximum number of open Parquet writers to prevent "too many open files" error
+# With 3 channels × 20 symbols × 2 exchanges = 120 partitions, this gives headroom
+# Each PyArrow ParquetWriter holds 1 file descriptor
+MAX_OPEN_WRITERS = 200
 
 # Characters that are prohibited in filesystem paths (replaced with -)
 # Covers Windows, Linux, macOS, and S3 key restrictions
@@ -427,7 +433,8 @@ class StreamingParquetWriter:
         self._partition_sizes: Dict[tuple, int] = {}
         
         # Hour-based segment naming per partition
-        self.current_date_hour: str = ""
+        # NOTE: Hour is tracked PER-SEGMENT (stored in segment info dict),
+        # NOT globally, to ensure all partitions rotate correctly on hour change
         self.hour_counters: Dict[str, int] = {}
         
         # Statistics
@@ -707,6 +714,9 @@ class StreamingParquetWriter:
             writer = segment_info["writer"]
             writer.write_table(table)
             
+            # Update last_write timestamp for LRU eviction
+            segment_info["last_write"] = time.time()
+            
             # Track size
             bytes_written = table.nbytes
             self._partition_sizes[partition_key] = self._partition_sizes.get(partition_key, 0) + bytes_written
@@ -873,15 +883,56 @@ class StreamingParquetWriter:
             return None
     
     def _ensure_segment_open(self, partition_key: tuple):
-        """Ensure a segment file is open for the partition."""
+        """
+        Ensure a segment file is open for the partition.
+        
+        Handles:
+        1. Opening new segment if none exists for partition
+        2. Rotating segment if hour changed (per-partition tracking)
+        3. Enforcing max open writers limit to prevent file handle exhaustion
+        """
         current_hour = utc_now().strftime("%Y%m%dT%H")
         
-        if partition_key not in self._partition_segments or current_hour != self.current_date_hour:
-            if partition_key in self._partition_segments:
+        # Check if this partition needs rotation (hour changed)
+        if partition_key in self._partition_segments:
+            segment_hour = self._partition_segments[partition_key].get("hour")
+            if segment_hour != current_hour:
                 self._rotate_segment(partition_key)
-            
-            self.current_date_hour = current_hour
-            self._open_new_segment(partition_key)
+        
+        # Enforce max open writers limit before opening new segment
+        if partition_key not in self._partition_segments:
+            if len(self._partition_segments) >= MAX_OPEN_WRITERS:
+                self._evict_oldest_writers(keep=MAX_OPEN_WRITERS // 2)
+            self._open_new_segment(partition_key, current_hour)
+    
+    def _evict_oldest_writers(self, keep: int = 100):
+        """
+        Close oldest writers to stay under file handle limit.
+        
+        Writers are evicted based on last_write timestamp (LRU policy).
+        This ensures high-frequency partitions stay open while idle ones close.
+        
+        Args:
+            keep: Number of writers to keep open after eviction
+        """
+        if len(self._partition_segments) <= keep:
+            return
+        
+        # Sort by last write time (oldest first)
+        sorted_segments = sorted(
+            self._partition_segments.items(),
+            key=lambda x: x[1].get("last_write", 0)
+        )
+        
+        # Close oldest writers
+        to_close = len(sorted_segments) - keep
+        closed_count = 0
+        for partition_key, _ in sorted_segments[:to_close]:
+            self._rotate_segment(partition_key)
+            closed_count += 1
+        
+        if closed_count > 0:
+            logger.info(f"[StreamingParquetWriter] Evicted {closed_count} idle writers (LRU)")
     
     def _build_partition_path(self, base_path: str, partition_key: tuple) -> str:
         """
@@ -910,14 +961,20 @@ class StreamingParquetWriter:
         
         return path
     
-    def _open_new_segment(self, partition_key: tuple):
-        """Open a new segment file for the partition."""
+    def _open_new_segment(self, partition_key: tuple, current_hour: str):
+        """
+        Open a new segment file for the partition.
+        
+        Args:
+            partition_key: Tuple of (channel, *partition_values)
+            current_hour: Current hour string (e.g., "20251227T02")
+        """
         pv = self._partition_key_to_values(partition_key)
         channel = pv["channel"]
         
         # Get counter for this hour/partition
         # Use sanitized values for counter key
-        counter_key = f"{self.current_date_hour}_{channel}"
+        counter_key = f"{current_hour}_{channel}"
         for col in self.partition_by:
             counter_key += f"_{pv.get(col, 'unknown')}"
         
@@ -926,7 +983,7 @@ class StreamingParquetWriter:
         self.hour_counters[counter_key] += 1
         counter = self.hour_counters[counter_key]
         
-        segment_name = f"segment_{self.current_date_hour}_{counter:05d}.parquet"
+        segment_name = f"segment_{current_hour}_{counter:05d}.parquet"
         
         partition_path = self._build_partition_path(self.active_path, partition_key)
         self.storage.mkdir(partition_path)
@@ -957,6 +1014,8 @@ class StreamingParquetWriter:
                 "path": segment_path,
                 "name": segment_name,
                 "partition_key": partition_key,
+                "hour": current_hour,
+                "last_write": time.time(),
             }
             self._partition_sizes[partition_key] = 0
             return
@@ -966,6 +1025,8 @@ class StreamingParquetWriter:
             "path": segment_path,
             "name": segment_name,
             "partition_key": partition_key,
+            "hour": current_hour,
+            "last_write": time.time(),
         }
         self._partition_sizes[partition_key] = 0
         
@@ -1166,9 +1227,10 @@ class StreamingParquetWriter:
             pass  # Directory not empty or permission denied
     
     def get_stats(self) -> dict:
-        """Get writer statistics."""
+        """Get writer statistics including open file handle count."""
         return {
             **self.stats,
             "queue_size": self.queue.qsize(),
-            "open_partitions": len(self._partition_segments),
+            "open_writers": len(self._partition_segments),
+            "max_open_writers": MAX_OPEN_WRITERS,
         }

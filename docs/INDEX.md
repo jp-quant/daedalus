@@ -45,7 +45,8 @@ This document provides a map of all documentation and quick access to key inform
 
 | Document | Purpose | Read When |
 |----------|---------|-----------|
-| [`INGESTION_MEMORY_FLUSHING_REVIEW.md`](INGESTION_MEMORY_FLUSHING_REVIEW.md) | **NEW** Memory, flushing, startup migration | Production deployment/optimization |
+| [`INGESTION_MEMORY_FLUSHING_REVIEW.md`](INGESTION_MEMORY_FLUSHING_REVIEW.md) | Memory, flushing, startup migration | Production deployment/optimization |
+| [`PI4_DEPLOYMENT.md`](PI4_DEPLOYMENT.md) | **NEW** Complete Raspberry Pi 4 deployment guide | Setting up 24/7 operation on Pi4 |
 
 ### ETL & Data Processing
 
