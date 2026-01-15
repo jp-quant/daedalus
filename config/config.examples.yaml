@@ -223,6 +223,12 @@ ccxt:
         watchTicker: ['BTC/USDC', 'ETH/USDC', 'XRP/USDC', 'SOL/USDC', 'ZEC/USDC', 'LINK/USDC', 'DOGE/USDC', 'ADA/USDC', 'SUI/USDC', 'FARTCOIN/USDC', 'PENGU/USDC', 'AAVE/USDC', 'HBAR/USDC', 'MON/USDC', 'AVAX/USDC', 'TAO/USDC', 'BCH/USDC', 'LTC/USDC', 'XLM/USDC', 'PEPE/USDC', 'ICP/USDC', 'BONK/USDC', 'UNI/USDC', 'ONDO/USDC', 'ZEN/USDC']
         watchTrades: ['BTC/USDC', 'ETH/USDC', 'XRP/USDC', 'SOL/USDC', 'ZEC/USDC', 'LINK/USDC', 'DOGE/USDC', 'ADA/USDC', 'SUI/USDC', 'FARTCOIN/USDC', 'PENGU/USDC', 'AAVE/USDC', 'HBAR/USDC', 'MON/USDC', 'AVAX/USDC', 'TAO/USDC', 'BCH/USDC', 'LTC/USDC', 'XLM/USDC', 'PEPE/USDC', 'ICP/USDC', 'BONK/USDC', 'UNI/USDC', 'ONDO/USDC', 'ZEN/USDC']
         watchOrderBook: ['BTC/USDC', 'ETH/USDC', 'XRP/USDC', 'SOL/USDC', 'ZEC/USDC', 'LINK/USDC', 'DOGE/USDC', 'ADA/USDC', 'SUI/USDC', 'FARTCOIN/USDC', 'PENGU/USDC', 'AAVE/USDC', 'HBAR/USDC', 'MON/USDC', 'AVAX/USDC', 'TAO/USDC', 'BCH/USDC', 'LTC/USDC', 'XLM/USDC', 'PEPE/USDC', 'ICP/USDC', 'BONK/USDC', 'UNI/USDC', 'ONDO/USDC', 'ZEN/USDC']
+    kraken:
+      max_orderbook_depth: 50
+      channels:
+        watchTicker: ['BTC/USD', 'ETH/USD', 'SOL/USD', 'EUR/USD', 'XRP/USD', 'XMR/USD', 'DASH/USD', 'SUI/USD', 'ZEC/USD', 'LTC/USD', 'DOGE/USD', 'ICP/USD', 'GBP/USD', 'FARTCOIN/USD', 'ADA/USD', 'TAO/USD', 'LINK/USD', 'BCH/USD', 'PAXG/USD', 'PUMP/USD', 'PEPE/USD', 'CC/USD', 'RENDER/USD', 'XAUT/USD', 'WIF/USD']
+        watchTrades: ['BTC/USD', 'ETH/USD', 'SOL/USD', 'EUR/USD', 'XRP/USD', 'XMR/USD', 'DASH/USD', 'SUI/USD', 'ZEC/USD', 'LTC/USD', 'DOGE/USD', 'ICP/USD', 'GBP/USD', 'FARTCOIN/USD', 'ADA/USD', 'TAO/USD', 'LINK/USD', 'BCH/USD', 'PAXG/USD', 'PUMP/USD', 'PEPE/USD', 'CC/USD', 'RENDER/USD', 'XAUT/USD', 'WIF/USD']
+        watchOrderBook: ['BTC/USD', 'ETH/USD', 'SOL/USD', 'EUR/USD', 'XRP/USD', 'XMR/USD', 'DASH/USD', 'SUI/USD', 'ZEC/USD', 'LTC/USD', 'DOGE/USD', 'ICP/USD', 'GBP/USD', 'FARTCOIN/USD', 'ADA/USD', 'TAO/USD', 'LINK/USD', 'BCH/USD', 'PAXG/USD', 'PUMP/USD', 'PEPE/USD', 'CC/USD', 'RENDER/USD', 'XAUT/USD', 'WIF/USD']
 
 # =============================================================================
 # INGESTION LAYER SETTINGS
@@ -242,7 +248,7 @@ ingestion:
   # Parquet raw format options (when raw_format: "parquet")
   raw_format: "parquet"                       # "ndjson" or "parquet"
   parquet_compression: "zstd"                 # Compression for raw parquet (snappy, gzip, zstd)
-  parquet_compression_level: 1                # Compression level (1=fast, 9=max)
+  parquet_compression_level: 4                # Compression level (1=fast, 9=max)
   
   # ===========================================================================
   # PARTITIONING CONFIGURATION (Directory-Aligned Partitioning)
