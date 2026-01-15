@@ -78,7 +78,7 @@ DEFAULT_PARTITION_COLUMNS = ["exchange", "symbol", "year", "month", "day", "hour
 # Maximum number of open Parquet writers to prevent "too many open files" error
 # With 3 channels × 20 symbols × 2 exchanges = 120 partitions, this gives headroom
 # Each PyArrow ParquetWriter holds 1 file descriptor
-MAX_OPEN_WRITERS = 200
+MAX_OPEN_WRITERS = 350
 
 # Characters that are prohibited in filesystem paths (replaced with -)
 # Covers Windows, Linux, macOS, and S3 key restrictions
