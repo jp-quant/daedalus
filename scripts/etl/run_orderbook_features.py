@@ -119,7 +119,7 @@ def create_transform_config(
                 name="silver",
                 path=output_path,
                 format=DataFormat.PARQUET,
-                partition_cols=["exchange", "symbol", "year", "month", "day"],
+                partition_cols=["exchange", "symbol", "year", "month", "day", "hour"],
                 mode=WriteMode.OVERWRITE_PARTITION,
                 compression=CompressionCodec.ZSTD,
                 compression_level=3,
@@ -184,6 +184,36 @@ class StatefulOrderbookRunner:
     Runner for orderbook feature ETL with state management.
     
     Supports checkpoint/resume for long-running batch jobs.
+    
+    IMPORTANT: State is per-asset (exchange + symbol)!
+    ==================================================
+    The state file stores processor state (prev_mid, prev_bids, prev_asks, etc.)
+    for a SINGLE exchange+symbol pair. You should use separate state files
+    for different assets:
+    
+        # Good: separate state files per asset
+        python run_orderbook_features.py --exchange binanceus --symbol BTC-USD \\
+            --state-path state/binanceus_btc-usd.json
+        
+        python run_orderbook_features.py --exchange coinbase --symbol ETH-USD \\
+            --state-path state/coinbase_eth-usd.json
+    
+    Chronological Processing Assumed:
+    =================================
+    State carries over values like prev_mid, prev_bids, prev_asks which are used
+    to compute OFI, MLOFI, velocity, etc. For correct feature computation:
+    
+    1. Process time partitions in chronological order (hour 0, then 1, then 2...)
+    2. Use the same state file across consecutive time periods
+    3. State includes the last processed timestamp for verification
+    
+    Example workflow for BTC-USD on 2025-12-18:
+        for hour in 0 1 2 3 ... 23; do
+            python run_orderbook_features.py \\
+                --exchange coinbaseadvanced --symbol BTC-USD \\
+                --year 2025 --month 12 --day 18 --hour $hour \\
+                --state-path btc-usd_orderbook_state.json
+        done
     """
     
     def __init__(
@@ -211,6 +241,24 @@ class StatefulOrderbookRunner:
             with open(self.state_path, 'r') as f:
                 self._state = json.load(f)
             logger.info(f"Loaded state from {self.state_path}")
+            
+            # Log last execution info for verification
+            last_exec = self._state.get("last_execution", {})
+            if last_exec:
+                logger.info(f"  Last execution: {last_exec.get('id')} at {last_exec.get('time')}")
+                stats = last_exec.get("stats", {})
+                if stats:
+                    logger.info(f"  Last stats: {stats.get('write_stats', {})}")
+            
+            # Log processor state summary
+            transform_state = self._state.get("transform_state", {})
+            processor_state = transform_state.get("processor", {})
+            if processor_state:
+                prev_ts = processor_state.get("prev_timestamp")
+                prev_mid = processor_state.get("prev_mid")
+                if prev_ts and prev_mid:
+                    logger.info(f"  Previous state: mid={prev_mid:.2f}, timestamp={prev_ts:.3f}")
+                    
         except Exception as e:
             logger.warning(f"Could not load state: {e}")
             self._state = {}
@@ -253,6 +301,10 @@ def run_orderbook_etl(
     trades_path: Optional[Path] = None,
     exchange: Optional[str] = None,
     symbol: Optional[str] = None,
+    year: Optional[str] = None,
+    month: Optional[str] = None,
+    day: Optional[str] = None,
+    hour: Optional[str] = None,
     dry_run: bool = False,
     limit_rows: Optional[int] = None,
     state_path: Optional[Path] = None,
@@ -267,6 +319,10 @@ def run_orderbook_etl(
         trades_path: Optional path to trades data for TFI calculation
         exchange: Optional exchange filter
         symbol: Optional symbol filter
+        year: Optional[str] = None,
+        month: Optional[str] = None,
+        day: Optional[str] = None,
+        hour: Optional[str] = None,
         dry_run: If True, don't write outputs
         limit_rows: Optional limit on rows to process
         state_path: Optional path for state persistence
@@ -301,10 +357,14 @@ def run_orderbook_etl(
     
     # Build FilterSpec for partition pruning
     filter_spec = None
-    if exchange or symbol:
+    if exchange or symbol or year or month or day or hour:
         filter_spec = FilterSpec(
             exchange=exchange,
             symbol=symbol,
+            year=int(year) if year is not None else None,
+            month=int(month) if month is not None else None,
+            day=int(day) if day is not None else None,
+            hour=int(hour) if hour is not None else None,
         )
         logger.info(f"Filter: {filter_spec}")
     
@@ -419,6 +479,26 @@ def main():
         help="Filter by symbol (e.g., BTC/USDT)",
     )
     parser.add_argument(
+        "--year",
+        type=str,
+        help="Filter by year (e.g., 2024)",
+    )
+    parser.add_argument(
+        "--month",
+        type=str,
+        help="Filter by month (e.g., 01)",
+    )
+    parser.add_argument(
+        "--day",
+        type=str,
+        help="Filter by day (e.g., 15)",
+    )
+    parser.add_argument(
+        "--hour",
+        type=str,
+        help="Filter by hour (e.g., 12)",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help="Limit number of rows to process (for testing)",
@@ -468,6 +548,10 @@ def main():
         trades_path=Path(args.trades) if args.trades else None,
         exchange=args.exchange,
         symbol=args.symbol,
+        year=args.year,
+        month=args.month,
+        day=args.day,
+        hour=args.hour,
         dry_run=args.dry_run,
         limit_rows=args.limit,
         state_path=Path(args.state_path) if args.state_path else None,

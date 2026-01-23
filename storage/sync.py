@@ -204,13 +204,38 @@ class StorageSync:
         
         # Filter out existing files if skip_existing
         if skip_existing:
-            logger.info("[StorageSync] Checking for existing files...")
+            logger.info("[StorageSync] Checking for existing files at destination...")
+            
+            # Efficient: List all destination files once instead of checking each file individually
+            # This reduces N API calls to 1 API call for S3
+            try:
+                existing_files = self.destination.list_files(
+                    dest_path, 
+                    pattern=pattern, 
+                    recursive=recursive_list_files
+                )
+                existing_paths = {f['path'] for f in existing_files}
+                logger.info(f"[StorageSync] Found {len(existing_paths)} existing files at destination")
+            except Exception as e:
+                logger.warning(f"[StorageSync] Failed to list destination files, falling back to individual checks: {e}")
+                existing_paths = None
+            
             tasks_to_transfer = []
-            for task in tqdm(tasks, desc="Checking existing", unit="file", disable=not TQDM_AVAILABLE):
-                if not self.destination.exists(task['dst_path']):
-                    tasks_to_transfer.append(task)
-                else:
-                    stats.files_skipped += 1
+            if existing_paths is not None:
+                # Fast path: O(1) set lookup per file
+                for task in tasks:
+                    if task['dst_path'] not in existing_paths:
+                        tasks_to_transfer.append(task)
+                    else:
+                        stats.files_skipped += 1
+            else:
+                # Fallback: Individual existence checks (slow but reliable)
+                for task in tqdm(tasks, desc="Checking existing", unit="file", disable=not TQDM_AVAILABLE):
+                    if not self.destination.exists(task['dst_path']):
+                        tasks_to_transfer.append(task)
+                    else:
+                        stats.files_skipped += 1
+            
             tasks = tasks_to_transfer
             logger.info(f"[StorageSync] {stats.files_skipped} files already exist, {len(tasks)} to transfer")
         

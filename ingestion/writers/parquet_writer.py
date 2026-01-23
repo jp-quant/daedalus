@@ -41,7 +41,6 @@ import atexit
 import io
 import logging
 import os
-import re
 import shutil
 import signal
 import sys
@@ -60,6 +59,15 @@ import pyarrow.parquet as pq
 from storage.base import StorageBackend
 from ingestion.utils.time import utc_now
 
+# Shared partitioning utilities (used by both ingestion and ETL)
+from shared.partitioning import (
+    DEFAULT_PARTITION_COLUMNS,
+    PROHIBITED_PATH_CHARS,
+    sanitize_partition_value,
+    extract_datetime_components,
+    format_partition_value,
+)
+
 logger = logging.getLogger(__name__)
 
 # Global registry of active writers for emergency cleanup
@@ -72,17 +80,14 @@ _CLEANUP_DONE = False
 # Constants
 # =============================================================================
 
-# Default partition columns for directory-aligned partitioning
-DEFAULT_PARTITION_COLUMNS = ["exchange", "symbol", "year", "month", "day", "hour"]
+# Re-export from shared module for backwards compatibility
+# DEFAULT_PARTITION_COLUMNS - imported from shared.partitioning
+# PROHIBITED_PATH_CHARS - imported from shared.partitioning
 
 # Maximum number of open Parquet writers to prevent "too many open files" error
 # With 3 channels × 20 symbols × 2 exchanges = 120 partitions, this gives headroom
 # Each PyArrow ParquetWriter holds 1 file descriptor
 MAX_OPEN_WRITERS = 350
-
-# Characters that are prohibited in filesystem paths (replaced with -)
-# Covers Windows, Linux, macOS, and S3 key restrictions
-PROHIBITED_PATH_CHARS = re.compile(r'[/\\:*?"<>|]')
 
 
 # =============================================================================
@@ -269,74 +274,19 @@ CHANNEL_SCHEMAS = {
 # Utility Functions
 # =============================================================================
 
-def sanitize_partition_value(value: Any) -> str:
-    """
-    Sanitize a partition value for filesystem compatibility.
-    
-    Replaces prohibited characters (/, \\, :, *, ?, ", <, >, |) with -.
-    This sanitization is applied to BOTH the partition path AND the actual
-    data to ensure they always match (Directory-Aligned Partitioning).
-    
-    Args:
-        value: The raw partition value (will be converted to string)
-        
-    Returns:
-        Sanitized string safe for filesystem paths
-        
-    Examples:
-        >>> sanitize_partition_value("BTC/USD")
-        'BTC-USD'
-        >>> sanitize_partition_value("exchange:test")
-        'exchange-test'
-        >>> sanitize_partition_value(2024)
-        '2024'
-    """
-    str_value = str(value) if value is not None else "unknown"
-    return PROHIBITED_PATH_CHARS.sub("-", str_value)
+# sanitize_partition_value - imported from shared.partitioning
+# extract_datetime_components - imported from shared.partitioning
 
-
-def extract_datetime_components(record: Dict[str, Any]) -> Tuple[int, int, int, int]:
-    """
-    Extract year, month, day, hour from record timestamp.
-    
-    Precedence: capture_ts > timestamp > current time
-    
-    Args:
-        record: Record dictionary with timestamp fields
-        
-    Returns:
-        Tuple of (year, month, day, hour) as integers
-    """
-    capture_ts = record.get("capture_ts")
-    timestamp = record.get("timestamp")
-    
-    dt = None
-    
-    # Try capture_ts first
-    if capture_ts:
-        try:
-            if isinstance(capture_ts, str):
-                if capture_ts.endswith("Z"):
-                    capture_ts = capture_ts[:-1] + "+00:00"
-                dt = datetime.fromisoformat(capture_ts)
-            elif isinstance(capture_ts, datetime):
-                dt = capture_ts
-        except Exception:
-            pass
-    
-    # Fall back to timestamp
-    if dt is None and timestamp:
-        try:
-            ts_sec = timestamp / 1000 if timestamp > 1e12 else timestamp
-            dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
-        except Exception:
-            pass
-    
-    # Fall back to current time
-    if dt is None:
-        dt = utc_now()
-    
-    return (dt.year, dt.month, dt.day, dt.hour)
+# Backwards compatibility: Re-export shared functions
+# These are now defined in shared/partitioning.py and imported at top of file
+__all__ = [
+    "StreamingParquetWriter",
+    "DEFAULT_PARTITION_COLUMNS",
+    "PROHIBITED_PATH_CHARS",
+    "sanitize_partition_value",
+    "extract_datetime_components",
+    "CHANNEL_SCHEMAS",
+]
 
 
 # =============================================================================

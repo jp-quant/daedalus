@@ -49,6 +49,15 @@ from etl.core.enums import (
     WriteMode,
 )
 
+# Shared partitioning utilities (used by both ingestion and ETL)
+from shared.partitioning import (
+    build_partition_path,
+    format_partition_value,
+    sanitize_dataframe_partition_values,
+    ensure_partition_columns_exist,
+    DEFAULT_PARTITION_COLUMNS,
+)
+
 if TYPE_CHECKING:
     from config.config import DaedalusConfig
 
@@ -683,6 +692,10 @@ class TransformExecutor:
         """
         Write DataFrame to partitioned Parquet (Hive-style).
         
+        Uses shared partitioning utilities for consistent behavior with ingestion.
+        Supports Directory-Aligned Partitioning where partition values exist
+        in data AND match directory paths.
+        
         Args:
             df: DataFrame to write.
             path: Base output path.
@@ -697,18 +710,29 @@ class TransformExecutor:
         file_count = 0
         base_path = Path(path)
         
+        # Ensure all partition columns exist (derive datetime cols if needed)
+        df = ensure_partition_columns_exist(
+            df, 
+            partition_cols,
+            timestamp_col="timestamp" if "timestamp" in df.columns else "capture_ts",
+        )
+        
+        # Sanitize partition column values for filesystem compatibility
+        df = sanitize_dataframe_partition_values(df, partition_cols)
+        
         # Group by partition columns
         for partition_values, group_df in df.group_by(partition_cols):
-            # Build partition path
-            if isinstance(partition_values, tuple):
-                partition_parts = [
-                    f"{col}={val}" 
-                    for col, val in zip(partition_cols, partition_values)
-                ]
-            else:
-                partition_parts = [f"{partition_cols[0]}={partition_values}"]
+            # Ensure partition_values is always a tuple
+            if not isinstance(partition_values, tuple):
+                partition_values = (partition_values,)
             
-            partition_path = base_path / "/".join(partition_parts)
+            # Build partition path using shared utility
+            partition_path = build_partition_path(
+                base_path=base_path,
+                partition_cols=partition_cols,
+                partition_values=partition_values,
+                # zero_pad_datetime=False,
+            )
             partition_path.mkdir(parents=True, exist_ok=True)
             
             # Generate filename
@@ -726,9 +750,9 @@ class TransformExecutor:
                     existing.unlink()
             # APPEND mode: just add new file
             
-            # Drop partition columns from data (they're in the path)
-            data_cols = [c for c in group_df.columns if c not in partition_cols]
-            write_df = group_df.select(data_cols)
+            # Keep partition columns in data (Directory-Aligned Partitioning)
+            # This differs from traditional Hive where partition cols are dropped
+            write_df = group_df
             
             write_df.write_parquet(
                 str(file_path),

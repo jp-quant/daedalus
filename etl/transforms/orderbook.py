@@ -6,16 +6,23 @@ Transform that computes orderbook features from bronze to silver tier.
 
 This transform:
 1. Reads bronze orderbook data (raw snapshots)
-2. Optionally reads bronze trades data (for TFI calculation)
-3. Extracts structural features (vectorized)
-4. Computes rolling features
-5. Computes stateful features (OFI, MLOFI, TFI, etc.)
-6. Writes silver feature data
+2. Optionally resamples to consistent frequency (ASOF semantics)
+3. Optionally reads bronze trades data (for TFI calculation)
+4. Extracts structural features (vectorized)
+5. Computes rolling features
+6. Computes stateful features (OFI, MLOFI, TFI, etc.)
+7. Writes silver feature data
 
 The transform supports both:
 - Fully vectorized processing (faster, for static features)
 - Stateful processing (for path-dependent features like OFI)
 - Hybrid orderbook+trades processing (for TFI)
+
+Resampling (Optional):
+- When resample_frequency is set in FeatureConfig, data is first resampled
+  to a consistent time grid using ASOF semantics (no lookahead bias)
+- This is useful when raw data has irregular timestamps
+- Controlled by: feature_config.resample_frequency (e.g., "1m", "5m")
 """
 
 import logging
@@ -43,6 +50,7 @@ from etl.features.orderbook import (
     extract_structural_features,
 )
 from etl.features.stateful import StatefulFeatureProcessor, StatefulProcessorConfig
+from etl.utils.resampling import resample_orderbook
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +119,7 @@ class OrderbookFeatureTransform(StatefulTransform):
         """
         super().__init__(config)
         self._processor: Optional[StatefulFeatureProcessor] = None
+        self._pending_processor_state: Optional[Dict[str, Any]] = None
     
     def initialize(self, context: TransformContext) -> None:
         """Initialize stateful processor."""
@@ -128,6 +137,12 @@ class OrderbookFeatureTransform(StatefulTransform):
         )
         
         self._processor = StatefulFeatureProcessor(processor_config)
+        
+        # Apply pending state if set_state() was called before initialize()
+        if self._pending_processor_state:
+            logger.info("Applying deferred processor state from checkpoint")
+            self._processor.set_state(self._pending_processor_state)
+            self._pending_processor_state = None
     
     def transform(
         self,
@@ -159,6 +174,19 @@ class OrderbookFeatureTransform(StatefulTransform):
         
         feature_config = context.feature_config
         
+        # Step 0: Optional ASOF resampling (prevents lookahead bias)
+        if feature_config.resample_frequency:
+            logger.info(
+                f"Resampling orderbook to {feature_config.resample_frequency} "
+                f"frequency (ASOF semantics)"
+            )
+            orderbook_lf = resample_orderbook(
+                orderbook_lf,
+                frequency=feature_config.resample_frequency,
+                max_staleness=feature_config.resample_max_staleness,
+                group_cols=["symbol", "exchange"],
+            )
+        
         # Step 1: Extract structural features (vectorized)
         logger.info("Extracting structural features")
         silver_lf = extract_structural_features(
@@ -186,6 +214,7 @@ class OrderbookFeatureTransform(StatefulTransform):
             pl.col(time_col).dt.year().alias("year"),
             pl.col(time_col).dt.month().alias("month"),
             pl.col(time_col).dt.day().alias("day"),
+            pl.col(time_col).dt.hour().alias("hour"),
         ])
         
         # Step 5: Optionally drop raw bid/ask arrays to reduce storage
@@ -366,11 +395,23 @@ class OrderbookFeatureTransform(StatefulTransform):
         return state
     
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Restore state including processor state."""
+        """
+        Restore state including processor state.
+        
+        Note: If _processor hasn't been initialized yet (because initialize()
+        hasn't been called), we store the processor state in _pending_processor_state
+        and apply it when initialize() is called.
+        """
         processor_state = state.pop("processor", None)
         super().set_state(state)
-        if processor_state and self._processor:
-            self._processor.set_state(processor_state)
+        
+        if processor_state:
+            if self._processor:
+                # Processor exists, restore immediately
+                self._processor.set_state(processor_state)
+            else:
+                # Processor not yet created, defer state restoration
+                self._pending_processor_state = processor_state
 
 
 def create_orderbook_feature_config(

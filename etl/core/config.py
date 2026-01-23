@@ -8,7 +8,7 @@ Inspired by GlueETL pattern: INPUTS dict → transform() → OUTPUTS dict
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Union, List
 
 import polars as pl
 
@@ -263,6 +263,15 @@ class FeatureConfig:
     enable_stateful: bool = True  # Enable OFI, MLOFI, regime tracking, etc.
     
     # ==========================================================================
+    # RESAMPLING CONFIGURATION (ASOF semantics)
+    # ==========================================================================
+    # If set, resamples data to this frequency before feature extraction
+    # Uses ASOF semantics: "at time T, what was the last known state?"
+    # This prevents lookahead bias and is safe for backtesting/ML
+    resample_frequency: Optional[str] = None  # e.g., "1m", "5m", "1s" (None = no resampling)
+    resample_max_staleness: Optional[str] = None  # e.g., "5m" - flag data older than this
+    
+    # ==========================================================================
     # STORAGE OPTIMIZATION
     # ==========================================================================
     drop_raw_book_arrays: bool = True  # Drop raw bids/asks arrays after extraction
@@ -308,6 +317,7 @@ class FilterSpec:
     year: Optional[int] = None
     month: Optional[int] = None
     day: Optional[int] = None
+    hour: Optional[int] = None
     start_date: Optional[str] = None  # YYYY-MM-DD format
     end_date: Optional[str] = None    # YYYY-MM-DD format
     
@@ -344,7 +354,8 @@ class FilterSpec:
                 conditions.append(pl.col("month") == self.month)
             if self.day is not None:
                 conditions.append(pl.col("day") == self.day)
-        
+            if self.hour is not None:
+                conditions.append(pl.col("hour") == self.hour)
         if not conditions:
             return None
         
@@ -377,7 +388,8 @@ class FilterSpec:
             filters.append(("month", "=", self.month))
         if self.day is not None:
             filters.append(("day", "=", self.day))
-        
+        if self.hour is not None:
+            filters.append(("hour", "=", self.hour))
         return filters
     
     def to_dict(self) -> dict[str, Any]:
@@ -400,6 +412,8 @@ class FilterSpec:
             result["month"] = self.month
         if self.day is not None:
             result["day"] = self.day
+        if self.hour is not None:
+            result["hour"] = self.hour
         if self.start_date is not None:
             result["start_date"] = self.start_date
         if self.end_date is not None:
@@ -423,6 +437,7 @@ class FilterSpec:
             year=data.get("year"),
             month=data.get("month"),
             day=data.get("day"),
+            hour=data.get("hour"),
             start_date=data.get("start_date"),
             end_date=data.get("end_date"),
         )
