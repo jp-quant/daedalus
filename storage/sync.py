@@ -214,7 +214,9 @@ class StorageSync:
                     pattern=pattern, 
                     recursive=recursive_list_files
                 )
-                existing_paths = {f['path'] for f in existing_files}
+                # Normalize paths to forward slashes for consistent comparison
+                # S3 uses forward slashes, Windows local uses backslashes
+                existing_paths = {f['path'].replace("\\", "/") for f in existing_files}
                 logger.info(f"[StorageSync] Found {len(existing_paths)} existing files at destination")
             except Exception as e:
                 logger.warning(f"[StorageSync] Failed to list destination files, falling back to individual checks: {e}")
@@ -223,8 +225,10 @@ class StorageSync:
             tasks_to_transfer = []
             if existing_paths is not None:
                 # Fast path: O(1) set lookup per file
+                # Normalize dst_path to forward slashes for consistent comparison
                 for task in tasks:
-                    if task['dst_path'] not in existing_paths:
+                    normalized_dst = task['dst_path'].replace("\\", "/")
+                    if normalized_dst not in existing_paths:
                         tasks_to_transfer.append(task)
                     else:
                         stats.files_skipped += 1
