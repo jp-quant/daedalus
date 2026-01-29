@@ -72,6 +72,12 @@ class StatefulProcessorConfig:
     enable_vpin: bool = True
     vpin_bucket_volume: float = 1.0
     vpin_window_buckets: int = 50
+    
+    # State staleness threshold (seconds)
+    # If time gap between prev_timestamp and current exceeds this,
+    # reset prev_* state to avoid computing OFI against stale data.
+    # Default: 300s (5 minutes) - reasonable for hour-by-hour processing
+    max_state_staleness_seconds: float = 300.0
 
 
 class StatefulFeatureProcessor:
@@ -159,6 +165,23 @@ class StatefulFeatureProcessor:
     
     def reset(self):
         """Reset all state. Call between processing different symbols."""
+        self._reset_prev_state()
+        self.pending_buy_volume = 0.0
+        self.pending_sell_volume = 0.0
+        self.mid_history.clear()
+        self._init_rolling_stats()
+    
+    def _reset_prev_state(self):
+        """
+        Reset only the prev_* state used for OFI/MLOFI computation.
+        
+        Called when:
+        - Time gap exceeds max_state_staleness_seconds
+        - Symbol changes during processing
+        - Manual reset() call
+        
+        Does NOT reset rolling stats (they handle their own time-based expiry).
+        """
         self.prev_mid = None
         self.prev_best_bid = None
         self.prev_best_ask = None
@@ -166,11 +189,7 @@ class StatefulFeatureProcessor:
         self.prev_ask_size = None
         self.prev_bids = None
         self.prev_asks = None
-        self.prev_timestamp = None
-        self.pending_buy_volume = 0.0
-        self.pending_sell_volume = 0.0
-        self.mid_history.clear()
-        self._init_rolling_stats()
+        # Note: prev_timestamp is NOT reset here so we can still track gaps
     
     def process_trade(self, trade: Dict[str, Any]):
         """
@@ -206,11 +225,27 @@ class StatefulFeatureProcessor:
         
         Returns:
             Dictionary of computed features to merge with structural features.
+        
+        Note:
+            If the time gap between this snapshot and the previous one exceeds
+            max_state_staleness_seconds, prev_* state is reset to avoid computing
+            OFI/MLOFI against stale orderbook data. This handles:
+            - First snapshot after loading stale state
+            - Data gaps from ingestion downtime
+            - Resuming processing after long pauses
         """
         features: Dict[str, Any] = {}
         
         ts_ms = record.get("timestamp") or record.get("collected_at", 0)
         ts_sec = ts_ms / 1000.0
+        
+        # Check for stale state and reset prev_* if gap is too large
+        # This prevents computing OFI against orderbook data from hours ago
+        if self.prev_timestamp is not None:
+            time_gap = ts_sec - self.prev_timestamp
+            if time_gap > self.config.max_state_staleness_seconds:
+                # Reset only prev_* state (not rolling stats which handle their own expiry)
+                self._reset_prev_state()
         
         # Extract bids/asks
         bids = record.get("bids", [])

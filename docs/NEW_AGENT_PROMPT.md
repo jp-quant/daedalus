@@ -19,9 +19,9 @@ Build a competitive edge through **information processing**, not speed. We canno
 | Parameter | Value |
 |-----------|-------|
 | Asset Class | Cryptocurrency (BTC, ETH, SOL, etc.) |
-| Exchanges | Binance US, Coinbase Advanced, OKX, 100+ via CCXT |
+| Exchanges | Coinbase Advanced (primary), Binance US, OKX, 100+ via CCXT Pro |
 | Holding Period | 5 seconds to 4 hours |
-| Infrastructure | Retail/prosumer (Raspberry Pi to cloud) |
+| Infrastructure | Retail/prosumer (Raspberry Pi 4 for 24/7 collection → cloud for compute) |
 | Latency | 50-500ms (not co-located) |
 | Target Sharpe | > 2, Max Drawdown < 20% |
 
@@ -43,22 +43,39 @@ Build a competitive edge through **information processing**, not speed. We canno
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Layer 2: StreamingParquetWriter (ingestion/writers/)                │
 │ ├─ BRONZE LAYER: Raw data landing in Parquet format               │
+│ ├─ Directory-Aligned Partitioning (partition cols IN data)         │
 │ ├─ 5-10x smaller than NDJSON with ZSTD compression                │
-│ ├─ Channel-separated files (ticker/, trades/, orderbook/)          │
+│ ├─ Channel-separated: ticker/, trades/, orderbook/                 │
 │ ├─ Size-based segment rotation (default: 50 MB)                   │
 │ ├─ active/ → ready/ atomic moves                                   │
+│ ├─ Emergency cleanup on SIGINT/SIGTERM                             │
 │ └─ Schema-aware: typed columns, nested structs for orderbook      │
 └─────────────────────────────────────────────────────────────────────┘
-              ↓ (file system / S3)
+              ↓ (file system / S3 via StorageSync)
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Layer 3: ETL Workers (etl/) - SILVER/GOLD LAYERS                   │
-│ ├─ Reads ready/ segments (Parquet or NDJSON based on config)      │
-│ ├─ Atomic moves to processing/ (prevents double-processing)        │
+│ ├─ TransformExecutor orchestrates I/O and transform execution     │
+│ ├─ FilterSpec enables partition pruning for efficient reads        │
 │ ├─ Feature engineering: 60+ microstructure features                │
-│ ├─ Multi-output: High-frequency snapshots + bar aggregates         │
+│ ├─ Stateful features: OFI/MLOFI/TFI with staleness detection      │
+│ ├─ State checkpoint/resume via StatefulOrderbookRunner             │
 │ └─ Hive-partitioned Parquet output                                 │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Directory-Aligned Partitioning (Critical Concept!)
+
+Unlike traditional Hive partitioning where partition columns are derived from the directory path and NOT stored in data files, our approach requires partition column values to **EXIST in the Parquet data AND MATCH the directory partition values exactly**.
+
+**Default Partition Columns**: `["exchange", "symbol", "year", "month", "day", "hour"]`
+
+```
+raw/ready/ccxt/orderbook/exchange=coinbaseadvanced/symbol=BTC-USD/year=2025/month=06/day=19/hour=14/
+                                                          ↑
+                                            Values sanitized (/ → -) in BOTH path AND data
+```
+
+**Key files**: `shared/partitioning.py` (unified utilities used by ingestion AND ETL)
 
 ### Why Raw Parquet (Bronze Layer)?
 
@@ -81,15 +98,21 @@ Raw Market Data (tick-by-tick)
     ↓ (Collector adds capture_ts)
 asyncio.Queue (bounded, backpressure)
     ↓ (StreamingParquetWriter batches)
-Bronze Layer: Raw Parquet Segments (50MB chunks)
-    ├─ raw/active/ccxt/ticker/segment_*.parquet     (writing)
-    ├─ raw/active/ccxt/trades/segment_*.parquet     (writing)
-    ├─ raw/active/ccxt/orderbook/segment_*.parquet  (writing)
-    └─ raw/ready/ccxt/{channel}/segment_*.parquet   (ready for ETL)
-    ↓ (ETL Job picks up)
-Silver/Gold Layer: Feature-Engineered Parquet
-    ├─ processed/ccxt/orderbook/hf/exchange=X/symbol=Y/date=Z/*.parquet
-    └─ processed/ccxt/orderbook/bars/exchange=X/symbol=Y/date=Z/*.parquet
+Bronze Layer: Raw Parquet Segments (50MB chunks, Directory-Aligned Partitioned)
+    ├─ raw/active/ccxt/{channel}/exchange=X/symbol=Y/.../       (writing)
+    └─ raw/ready/ccxt/{channel}/exchange=X/symbol=Y/.../        (ready for ETL)
+    ↓ (StorageSync uploads to S3)
+S3 Bucket: Durable Cloud Storage
+    ↓ (ETL reads from local or S3)
+Silver Layer: Feature-Engineered Parquet
+    └─ processed/ccxt/orderbook/silver/exchange=X/symbol=Y/.../
+    ↓ (Bars Transform)
+Gold Layer: Aggregated Bars (future)
+```
+
+### Partition Path Example
+```
+raw/ready/ccxt/orderbook/exchange=coinbaseadvanced/symbol=BTC-USD/year=2025/month=06/day=19/hour=14/segment_001.parquet
 ```
 
 ### Raw Parquet Schemas
@@ -118,15 +141,22 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 
 ## Critical Code Map
 
+### Shared Utilities
+
+| File | Purpose |
+|------|---------|
+| `shared/partitioning.py` | **Unified partitioning logic** - sanitize values, build paths, DEFAULT_PARTITION_COLUMNS |
+
 ### Ingestion Layer (BRONZE)
 
 | File | Purpose |
 |------|---------|
-| `ingestion/writers/parquet_writer.py` | **StreamingParquetWriter** - Raw Parquet landing |
+| `ingestion/writers/parquet_writer.py` | **StreamingParquetWriter** - Raw Parquet landing with emergency cleanup |
 | `ingestion/writers/log_writer.py` | Legacy NDJSON writer (still supported) |
-| `ingestion/collectors/ccxt_collector.py` | CCXT Pro unified WebSocket (100+ exchanges) |
+| `ingestion/collectors/ccxt_collector.py` | CCXT Pro unified WebSocket (100+ exchanges), bulk methods |
 | `ingestion/collectors/coinbase_ws.py` | Native Coinbase Advanced Trade WebSocket |
-| `ingestion/orchestrators/ingestion_pipeline.py` | Coordinates collectors + writer |
+| `ingestion/orchestrators/ingestion_pipeline.py` | Coordinates collectors + writer with graceful shutdown |
+| `scripts/run_ingestion.py` | **Primary entry point**: `python scripts/run_ingestion.py --sources ccxt` |
 
 **Config**: `config.ingestion.raw_format = "parquet"` (recommended) or `"ndjson"` (legacy)
 
@@ -135,27 +165,52 @@ bids (list<struct<price, size>>), asks (list<struct<price, size>>)
 | File | Purpose |
 |------|---------|
 | `etl/features/orderbook.py` | Vectorized structural + rolling orderbook features (Polars) |
-| `etl/features/stateful.py` | Stateful (sequential) orderbook features: OFI/MLOFI/TFI/Kyle/VPIN |
+| `etl/features/stateful.py` | **StatefulFeatureProcessor** - OFI/MLOFI/TFI/Kyle/VPIN with staleness detection |
 | `etl/features/streaming.py` | Online stats primitives (RollingWelford, RollingSum, VPINCalculator, KyleLambdaEstimator) |
-| `etl/transforms/` | Channel transforms (ticker/trades/orderbook/bars) used by scripts |
-| `scripts/etl/run_orderbook_features.py` | Batch runner for orderbook features (supports `--trades` to drive TFI correctly) |
-| `scripts/etl/run_trades_features.py` | Batch runner for trades features (+ optional bars output) |
-| `scripts/etl/run_ticker_features.py` | Batch runner for ticker features (+ optional rolling stats) |
-| `scripts/etl/run_watcher.py` | Continuous watcher for ready/ segments with checkpointing |
+| `etl/transforms/orderbook.py` | **OrderbookFeatureTransform** - orchestrates structural + stateful features |
+| `etl/core/executor.py` | **TransformExecutor** - handles I/O, FilterSpec partition pruning, writes |
+| `etl/core/config.py` | FilterSpec, FeatureConfig, InputConfig, OutputConfig |
 | `etl/utils/state_manager.py` | State persistence for checkpoint/resume and graceful shutdown |
-| `etl/features/archived/` | Legacy files (snapshot.py, state.py) - deprecated, kept for reference |
 
-**Start here**: Read `docs/PARQUET_ETL_FEATURES.md` for feature reference and `scripts/etl/run_orderbook_features.py` for the runnable batch path.
+### ETL Scripts
 
-**Key Components for orderbook features**:
+| File | Purpose |
+|------|---------|
+| `scripts/etl/run_orderbook_features.py` | **StatefulOrderbookRunner** - batch orderbook ETL with state persistence |
+| `scripts/etl/run_trades_features.py` | Batch runner for trades features |
+| `scripts/etl/run_ticker_features.py` | Batch runner for ticker features |
+| `scripts/etl/run_bars.py` | Bar aggregation transform (silver → gold) |
+| `scripts/etl/run_watcher.py` | Continuous watcher for ready/ segments with checkpointing |
+
+**Start here**: Read `scripts/etl/run_orderbook_features.py` for the batch processing pattern.
+
+**Key Feature Components**:
 - `extract_structural_features()` in `etl/features/orderbook.py`
 - `compute_rolling_features()` in `etl/features/orderbook.py`
-- `StatefulFeatureProcessor` in `etl/features/stateful.py`
+- `StatefulFeatureProcessor` in `etl/features/stateful.py` (with `max_state_staleness_seconds`)
+
+### Storage & Sync
+
+| File | Purpose |
+|------|---------|
+| `storage/base.py` | Unified storage abstraction (LocalStorage, S3Storage) |
+| `storage/factory.py` | Storage backend factory |
+| `storage/sync.py` | **StorageSync** - bidirectional sync (local ↔ S3) with path normalization |
+| `scripts/run_sync.py` | **Sync entry point**: uploads raw data to S3 for durability |
+
+### Configuration
+
+| File | Purpose |
+|------|---------|
+| `config/config.py` | Pydantic configuration models (CoinbaseConfig, CcxtConfig, S3Config, etc.) |
+| `config/config.yaml` | Runtime configuration (NOT in git - contains API keys) |
+| `config/config.examples.yaml` | Template for config.yaml |
 
 **Critical Features Enabled by Default**:
 - VPIN (Volume-Synchronized Probability of Informed Trading) - flow toxicity, predicts volatility
 - Kyle's Lambda - price impact coefficient
 - Band-based depth (0-5bps, 5-10bps, etc.) - liquidity at price-distance
+- Staleness detection: `max_state_staleness_seconds = 300.0` (auto-resets stale prev_* state)
 
 ### Processors
 
@@ -285,21 +340,29 @@ If you need to spin up a research-oriented agent session to propose new feature 
 
 ---
 
-## Production Setup (4 Concurrent Terminals)
+## Production Setup (Raspberry Pi 4 Deployment)
 
 ```bash
 # Terminal 1: WebSocket Collection (24/7) - writes to Bronze layer
 python scripts/run_ingestion.py --sources ccxt
 
-# Terminal 2: Continuous ETL (real-time feature engineering)
-python scripts/etl/run_watcher.py --poll-interval 30
+# Terminal 2: S3 Sync (periodic uploads to cloud storage)
+python scripts/run_sync.py --mode continuous --interval 300
 
-# Terminal 3: Cloud Backup (periodic)
-python storage/sync.py upload --source-path processed/ --dest-path s3://bucket/processed/
-
-# Terminal 4: File Compaction (daily maintenance)
-python scripts/run_compaction.py --source ccxt --partition exchange=X/symbol=Y
+# Manual ETL (typically run in notebook or ad-hoc)
+# Process hour-by-hour with state persistence for correct OFI/MLOFI
+python scripts/etl/run_orderbook_features.py \
+    --exchange coinbaseadvanced --symbol BTC-USD \
+    --year 2025 --month 6 --day 19 --hour 14 \
+    --state-path state/btc-usd_orderbook.json \
+    --trades data/raw/ready/ccxt/trades
 ```
+
+**Typical Workflow**:
+1. Pi runs ingestion 24/7 → raw data lands in `raw/ready/`
+2. `run_sync.py` uploads to S3 periodically for durability
+3. ETL runs manually (notebook or script) when compute is available
+4. State files track processor state for checkpoint/resume
 
 ---
 
@@ -309,17 +372,18 @@ python scripts/run_compaction.py --source ccxt --partition exchange=X/symbol=Y
 # Start ingestion (writes raw Parquet to Bronze layer)
 python scripts/run_ingestion.py --sources ccxt
 
+# Run S3 sync (uploads local data to S3)
+python scripts/run_sync.py --mode once --dry-run    # Preview
+python scripts/run_sync.py --mode once              # Execute
+
+# Batch orderbook ETL with state persistence
+python scripts/etl/run_orderbook_features.py \
+    --exchange coinbaseadvanced --symbol BTC-USD \
+    --year 2025 --month 6 --day 19 --hour 14 \
+    --state-path state/btc-usd_orderbook.json
+
 # Verify configuration flow works
 python scripts/test_config_flow.py
-
-# Check system health
-python scripts/check_health.py
-
-# Query processed features
-python scripts/query_parquet.py data/processed/ccxt/orderbook/hf
-
-# Manual ETL run (single segment)
-python scripts/run_etl.py --source ccxt --channel orderbook
 ```
 
 ---
@@ -375,13 +439,13 @@ For deeper understanding, read these docs in `docs/`:
 ### VPIN (Volume-Synchronized Probability of Informed Trading)
 **Paper**: Easley, López de Prado, O'Hara (2012)  
 **Purpose**: Measure order flow toxicity - predicts volatility spikes and flash crashes  
-**Location**: `etl/features/streaming.py` → `VPINCalculator`, `etl/parquet_etl_pipeline.py`  
+**Location**: `etl/features/streaming.py` → `VPINCalculator`  
 **Config**: `enable_vpin=True` (default), `vpin_bucket_volume`, `vpin_window_buckets`
 
 ### Order Flow Imbalance (OFI)
 **Paper**: Cont, Stoikov, Talreja (2010)  
 **Purpose**: Measure buying/selling pressure from orderbook changes  
-**Location**: `etl/features/state.py`, `etl/parquet_etl_pipeline.py`
+**Location**: `etl/features/stateful.py` → `StatefulFeatureProcessor`
 
 ### Kyle's Lambda
 **Paper**: Kyle (1985)  
@@ -391,11 +455,16 @@ For deeper understanding, read these docs in `docs/`:
 ### Microprice
 **Formula**: `(bid_size × ask + ask_size × bid) / (bid_size + ask_size)`  
 **Purpose**: Volume-weighted fair value (more accurate than mid)  
-**Location**: `etl/features/snapshot.py`
+**Location**: `etl/features/orderbook.py` → `extract_structural_features()`
 
 ### Welford's Algorithm
 **Purpose**: Online variance computation (numerically stable)  
 **Location**: `etl/features/streaming.py` → `RollingWelford`
+
+### Directory-Aligned Partitioning
+**Purpose**: Unified partitioning across ingestion and ETL  
+**Key**: Partition column values exist IN data AND match directory path  
+**Location**: `shared/partitioning.py` → `sanitize_partition_value()`, `build_partition_path()`
 
 ### Medallion Architecture
 **Bronze**: Raw data landing (Parquet, preserves all fields)  
@@ -410,11 +479,12 @@ For deeper understanding, read these docs in `docs/`:
 | Issue | Solution |
 |-------|----------|
 | Features missing? | Run `python scripts/test_config_flow.py` |
-| S3 slow? | Check `max_pool_connections` in config.yaml |
+| S3 sync skipping files? | Check path normalization (`/` vs `\` - fixed in sync.py) |
 | High memory? | Reduce `max_levels` or `segment_max_mb` |
-| Partition issues? | Run `python scripts/fix_partition_mismatch.py` |
+| Stale OFI values? | Check `max_state_staleness_seconds` (300s default) |
 | Config not applied? | Enable DEBUG logging in config.yaml |
 | Raw data format? | Check `config.ingestion.raw_format` |
+| Partition mismatch? | Use `shared/partitioning.py` utilities |
 
 ---
 
@@ -424,12 +494,13 @@ You're ready to work on this codebase when you can:
 
 - [ ] Explain the Medallion architecture (Bronze → Silver → Gold)
 - [ ] Understand why we preserve raw data in Parquet format
-- [ ] Trace a config value from YAML → StateConfig → features
+- [ ] Explain Directory-Aligned Partitioning vs Hive partitioning
 - [ ] Describe how OFI is calculated (Cont's method)
+- [ ] Know how staleness detection prevents bad OFI after gaps
 - [ ] Navigate to the right file for any component
-- [ ] Explain the difference between HF features vs bars
-- [ ] Know where to add a new rolling statistic
-- [ ] Know where to add a new static feature
+- [ ] Explain the difference between structural (vectorized) vs stateful (sequential) features
+- [ ] Know where to add a new rolling statistic (`etl/features/streaming.py`)
+- [ ] Know where to add a new static feature (`etl/features/orderbook.py`)
 
 ---
 
