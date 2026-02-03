@@ -524,8 +524,8 @@ def main():
     parser.add_argument(
         "--memory-limit-mb",
         type=int,
-        default=1800,
-        help="Memory limit in MB before forced restart (default: 1800)"
+        default=3600,
+        help="Memory limit in MB before forced restart (default: 3600)"
     )
     parser.add_argument(
         "--dry-run",
