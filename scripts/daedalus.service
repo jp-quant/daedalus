@@ -8,7 +8,10 @@
 #
 # Installation:
 #   1. Copy this file to /etc/systemd/system/daedalus.service
-#   2. Edit the paths below to match your installation
+#   2. **IMPORTANT**: Edit User, Group, and all paths to match YOUR system:
+#      - User/Group: Your username (run `whoami` to check)
+#      - WorkingDirectory: Path to your market-data-pipeline folder
+#      - ExecStart: Path to your venv python and supervisor script
 #   3. sudo systemctl daemon-reload
 #   4. sudo systemctl enable daedalus
 #   5. sudo systemctl start daedalus
@@ -21,27 +24,37 @@
 #   journalctl -u daedalus --since "1 hour ago"  # Recent logs
 #
 # Troubleshooting:
-#   - Check logs: tail -f /home/pi/market-data-pipeline/logs/ingestion.log
+#   - "Failed to determine user credentials": Wrong User/Group - check `whoami`
+#   - Check logs: tail -f /path/to/market-data-pipeline/logs/ingestion.log
 #   - Check status: python scripts/daedalus_supervisor.py --status
 #   - Memory issues: Check logs for "memory critical" messages
 
 [Unit]
 Description=Daedalus Market Data Pipeline Supervisor
-Documentation=https://github.com/your-repo/market-data-pipeline
+Documentation=https://github.com/jp-quant/market-data-pipeline
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
 
-# IMPORTANT: Update these paths to match your installation
-WorkingDirectory=/home/pi/market-data-pipeline
+# ============================================================================
+# IMPORTANT: UPDATE THESE VALUES TO MATCH YOUR SYSTEM
+# ============================================================================
+# Run `whoami` to get your username, then update User and Group
+User=admin
+Group=admin
 
-# Use the Python supervisor instead of bash script
-# The supervisor handles process management, health monitoring, and auto-restart
-ExecStart=/home/pi/market-data-pipeline/venv/bin/python /home/pi/market-data-pipeline/scripts/daedalus_supervisor.py
+# Update this to your actual project path
+# Common locations:
+#   /home/admin/Desktop/market-data-pipeline  (Pi4 with admin user)
+#   /home/pi/market-data-pipeline             (Pi4 with pi user)
+#   /home/username/market-data-pipeline       (other Linux)
+WorkingDirectory=/home/admin/Desktop/market-data-pipeline
+
+# Update paths to match WorkingDirectory above
+ExecStart=/home/admin/Desktop/market-data-pipeline/venv/bin/python /home/admin/Desktop/market-data-pipeline/scripts/daedalus_supervisor.py
+# ============================================================================
 
 # Graceful shutdown with 60 second timeout
 ExecStop=/bin/kill -SIGTERM $MAINPID
@@ -54,8 +67,8 @@ RestartSec=30
 
 # Resource limits to prevent Pi4 OOM
 # The supervisor monitors individual process memory and restarts them if needed
-MemoryMax=2.5G
-MemoryHigh=2G
+MemoryMax=4G
+MemoryHigh=3.5G
 
 # Environment for memory optimization
 Environment=PYTHONUNBUFFERED=1
