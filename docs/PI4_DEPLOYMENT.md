@@ -70,7 +70,32 @@ python scripts/run_sync.py --dry-run --include-raw
 
 ## Running as a Service
 
-### Option 1: Using run_pipeline.sh (Recommended)
+### Option 1: Using daedalus_supervisor.py (Recommended)
+
+The Python supervisor provides:
+- **Health monitoring** - Checks process memory and responsiveness
+- **Auto-restart** - Restarts crashed processes automatically  
+- **Memory leak protection** - Force-restarts processes exceeding memory limits
+- **Rate limiting** - Prevents restart loops
+- **Unified logging** - All output to logs/ directory
+
+```bash
+# Activate venv
+source venv/bin/activate
+
+# Start supervisor (foreground for testing)
+python scripts/daedalus_supervisor.py
+
+# Start with options
+python scripts/daedalus_supervisor.py --no-sync        # Skip sync
+python scripts/daedalus_supervisor.py --memory-limit-mb 1500  # Custom limit
+python scripts/daedalus_supervisor.py --dry-run        # Preview without starting
+
+# Check status of running processes
+python scripts/daedalus_supervisor.py --status
+```
+
+### Option 2: Using run_pipeline.sh (Legacy)
 
 ```bash
 # Make executable
@@ -89,7 +114,7 @@ chmod +x scripts/run_pipeline.sh
 ./scripts/run_pipeline.sh --restart
 ```
 
-### Option 2: Using systemd (Auto-start on Boot)
+### Option 3: Using systemd (Auto-start on Boot - RECOMMENDED)
 
 ```bash
 # Install service
@@ -112,21 +137,50 @@ sudo systemctl status daedalus
 
 # View logs
 journalctl -u daedalus -f
+
+# View process-specific logs
+tail -f ~/market-data-pipeline/logs/ingestion.log
+tail -f ~/market-data-pipeline/logs/sync.log
 ```
 
 ---
 
 ## Memory & Resource Management
 
-### Why Terminals Close After Half a Day
+### Why Processes Die After a Week
 
 Common causes on Pi4:
 
-1. **OOM Killer**: Linux kills processes when memory is exhausted
-2. **SSH Disconnect**: Running in SSH terminal without `nohup` or `screen`
-3. **Swap Exhaustion**: Insufficient swap space
+1. **Memory Leaks**: Dictionary accumulation over time (now fixed)
+2. **OOM Killer**: Linux kills processes when memory/swap exhausted
+3. **SSH Disconnect**: Running in SSH terminal without supervision
+4. **Swap Exhaustion**: Insufficient swap space for long-running processes
 
 ### Solutions Implemented
+
+#### 0. Automatic Memory Management (NEW)
+
+The supervisor and writer now include automatic memory management:
+
+**Supervisor (`daedalus_supervisor.py`):**
+- Monitors process memory every 60 seconds
+- Warns at 1.2GB, force-restarts at 1.8GB
+- Tracks restart rate to prevent crash loops
+- Runs GC periodically on itself
+
+**Writer (`StreamingParquetWriter`):**
+- **Periodic cleanup** every 5 minutes:
+  - Removes stale `hour_counters` entries (older than 2 hours)
+  - Cleans empty partition buffers
+  - Forces garbage collection
+- **Stats tracking** for memory diagnostics:
+  - `memory_cleanups`, `gc_collections`
+  - `stale_counters_cleaned`, `stale_buffers_cleaned`
+
+Check memory stats in logs:
+```
+[StreamingParquetWriter] Memory cleanup: counters=12, buffers=8, segments=6, gc_collected=142
+```
 
 #### 1. Memory Optimization in Writer
 

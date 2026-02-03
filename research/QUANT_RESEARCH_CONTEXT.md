@@ -218,7 +218,143 @@ predictor.feature_importance(test_df)
 | Date | Researcher | Finding |
 |------|------------|---------|
 | 2026-01-31 | Initial | Created feature pipeline with 197 features |
-| | | |
+| 2026-01-31 | EDA Phase | Completed comprehensive EDA (1 hour sample) |
+| 2026-02-02 | Full Day Analysis | AutoGluon modeling on 613K records |
+| **2026-02-02** | **Walk-Forward & Backtest** | **Complete validation pipeline** |
+
+### Walk-Forward Validation & Backtest (2026-02-02) ⭐ LATEST
+
+**Walk-Forward Cross-Validation (5 folds):**
+| Metric | Mean ± Std | Interpretation |
+|--------|------------|----------------|
+| ROC-AUC | **0.601 ± 0.041** | Modest predictive power |
+| Accuracy | 0.636 ± 0.058 | Above baseline |
+| Precision | 0.469 ± 0.108 | **Below break-even** |
+| F1 Score | 0.474 ± 0.110 | Needs improvement |
+| **Stability** | ❌ UNSTABLE | AUC range 0.11 across folds |
+
+**Critical Finding: Model is UNSTABLE**
+- Best fold: #2 (AUC=0.655)
+- Worst fold: #1 (AUC=0.548)
+- Performance varies significantly with time period
+
+**Threshold Optimization:**
+- Precision never exceeds 42% even at high thresholds (0.8)
+- Edge per trade is **negative** at all thresholds
+- No threshold achieves profitability
+
+**Backtest Results (with 130 bps round-trip costs):**
+| Threshold | Trades | Win Rate | Avg Return | Total Return |
+|-----------|--------|----------|------------|--------------|
+| 0.50 | ~244K | 38% | -98 bps | **Massive loss** |
+| 0.55 | ~184K | 37% | -104 bps | Massive loss |
+| 0.60 | ~141K | 38% | -101 bps | Massive loss |
+| 0.65 | ~102K | 37% | -106 bps | Massive loss |
+
+**🚨 CRITICAL CONCLUSION: Model cannot overcome transaction costs!**
+- With 40% precision and 130 bps costs, every trade loses money
+- Need precision > 55% to break even after costs
+- Current model is NOT profitable
+
+**Feature Selection Results:**
+| N Features | ROC-AUC | Precision | Notes |
+|------------|---------|-----------|-------|
+| 5 | 0.554 | 42% | Too sparse |
+| 10 | 0.602 | 49% | **Recommended min** |
+| 15 | 0.602 | 50% | Good trade-off |
+| **20** | **0.617** | **50%** | **Best precision** |
+| Full (27) | 0.601 | 47% | Overfitting? |
+
+**Top 10 Features for Production:**
+1. `imbalance_L1`
+2. `relative_spread`
+3. `imbalance_L5`
+4. `total_imbalance`
+5. `bid_concentration`
+6. `imbalance_L10`
+7. `imb_band_5_10bps`
+8. `mlofi`
+9. `ofi`
+10. `hour_cos`
+
+### Artifacts Created:
+- `research/enhanced_findings.json` - Complete validation results
+- `research/walk_forward_results.csv` - Fold-by-fold metrics
+- `research/backtest_results.csv` - Threshold comparison
+- `research/threshold_analysis.csv` - Precision-recall curve
+
+---
+
+### Path to Profitability - Research Agenda
+
+Given current results showing **unprofitable** model, priority research:
+
+1. **Longer Horizons**: Try `dir_60tick` or `dir_120tick` for larger price moves
+2. **Volatility Filtering**: Only trade during high-vol regimes (bigger moves)
+3. **Cost Reduction**: Use maker orders (40 bps vs 60 bps) with limit orders
+4. **Multi-Day Validation**: Current 1-day may not be representative
+5. **Feature Engineering**: Try lag features, interaction terms, regime indicators
+6. **Alternative Targets**: Predict volatility instead of direction
+
+---
+
+### Full Day Analysis (2026-02-02)
+
+**Data Characteristics (Full Day - 2026-01-26):**
+- 613,480 records (24 hours of trading)
+- Event-driven data: 54ms median, 141ms mean inter-arrival
+- **NOT fixed-frequency** - irregular timestamps!
+- Price range: $86,412 - $88,767 (2.73% daily range)
+
+**⚠️ Critical: Event-Driven Data Handling:**
+Added time features to account for irregular timestamps:
+- `delta_seconds` - Time since last event
+- `hour_of_day`, `hour_sin`, `hour_cos` - Intraday patterns  
+- `is_gap_1s`, `is_gap_5s` - Gap indicators
+
+**Target Selection (dir_30tick chosen):**
+| Horizon | % Up | Recommendation |
+|---------|------|----------------|
+| 1-tick | 7% | ❌ Too imbalanced |
+| 5-tick | 15% | ⚠️ Still imbalanced |
+| **30-tick** | **33%** | ✅ **Best balance** |
+| 60-tick | 40% | ✅ Good alternative |
+
+**AutoGluon Model Results:**
+| Metric | Value |
+|--------|-------|
+| Best Model | LightGBM_BAG_L1 |
+| Test ROC-AUC | **0.629** |
+| Test Accuracy | 61.9% |
+| Training Time | ~6 minutes |
+
+**Top Features by Model Importance (Permutation):**
+| Feature | Importance | Correlation |
+|---------|------------|-------------|
+| `imbalance_L1` | **0.028** | +0.030 |
+| `relative_spread` | **0.019** | +0.015 |
+| `imbalance_L5` | 0.006 | +0.057 |
+| `total_imbalance` | 0.006 | +0.087 |
+| `bid_concentration` | 0.005 | +0.040 |
+
+**Key Insight**: `imbalance_L1` (top-of-book imbalance) is the most predictive feature, even though it had lower raw correlation than depth imbalances!
+
+**Artifacts Created:**
+- `research/analysis_findings.json` - Complete analysis results
+- `research/feature_importance_autogluon.csv` - Model feature importance
+- `research/model_leaderboard.csv` - All model performances
+- `research/models/autogluon_BTC_USD_dir_30tick/` - Trained model
+
+### Previous EDA Phase Findings (2026-01-31)
+
+**Data Characteristics (1 Hour Sample):**
+- High-frequency data: ~18 updates/sec (54ms median inter-arrival)
+- 28,138 records per hour, 207 columns
+- Very tight spreads: 0.005 bps mean (liquid market)
+
+**Multicollinearity Warning:**
+- `total_imbalance` ≈ `book_pressure` ≈ `smart_depth_imbalance` (r=1.0)
+- AutoGluon automatically handles by ignoring redundant features
 
 ---
 

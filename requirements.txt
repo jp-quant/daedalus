@@ -20,6 +20,9 @@ pandas
 pyarrow
 polars  # For efficient large-scale data processing with lazy evaluation
 
+# Process monitoring (used by supervisor for memory tracking)
+psutil
+
 # Configuration management
 pydantic
 pydantic-settings

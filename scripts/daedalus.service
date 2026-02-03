@@ -1,5 +1,11 @@
 # Daedalus Market Data Pipeline - systemd Service
 # 
+# This service runs the Daedalus supervisor which manages:
+# - Ingestion pipeline (websocket collection)
+# - Storage sync (local → S3)
+# - Health monitoring with auto-restart
+# - Memory leak detection and forced restart
+#
 # Installation:
 #   1. Copy this file to /etc/systemd/system/daedalus.service
 #   2. Edit the paths below to match your installation
@@ -12,42 +18,61 @@
 #   sudo systemctl stop daedalus      # Stop
 #   sudo systemctl restart daedalus   # Restart
 #   journalctl -u daedalus -f         # Follow logs
+#   journalctl -u daedalus --since "1 hour ago"  # Recent logs
+#
+# Troubleshooting:
+#   - Check logs: tail -f /home/pi/market-data-pipeline/logs/ingestion.log
+#   - Check status: python scripts/daedalus_supervisor.py --status
+#   - Memory issues: Check logs for "memory critical" messages
 
 [Unit]
-Description=Daedalus Market Data Pipeline
+Description=Daedalus Market Data Pipeline Supervisor
 Documentation=https://github.com/your-repo/market-data-pipeline
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=forking
+Type=simple
 User=pi
 Group=pi
 
 # IMPORTANT: Update these paths to match your installation
 WorkingDirectory=/home/pi/market-data-pipeline
-ExecStart=/home/pi/market-data-pipeline/scripts/run_pipeline.sh
-ExecStop=/home/pi/market-data-pipeline/scripts/run_pipeline.sh --stop
 
-# Restart policy - restart on failure with delay
-Restart=on-failure
+# Use the Python supervisor instead of bash script
+# The supervisor handles process management, health monitoring, and auto-restart
+ExecStart=/home/pi/market-data-pipeline/venv/bin/python /home/pi/market-data-pipeline/scripts/daedalus_supervisor.py
+
+# Graceful shutdown with 60 second timeout
+ExecStop=/bin/kill -SIGTERM $MAINPID
+TimeoutStopSec=60
+
+# Restart policy - systemd will restart the supervisor if it crashes
+# The supervisor itself handles restarting ingestion/sync processes
+Restart=always
 RestartSec=30
 
 # Resource limits to prevent Pi4 OOM
-MemoryMax=2G
-MemoryHigh=1.5G
+# The supervisor monitors individual process memory and restarts them if needed
+MemoryMax=2.5G
+MemoryHigh=2G
 
-# Environment
+# Environment for memory optimization
 Environment=PYTHONUNBUFFERED=1
 Environment=MALLOC_ARENA_MAX=2
+Environment=PYTHONMALLOC=malloc
 
-# Logging
-StandardOutput=append:/home/pi/market-data-pipeline/logs/systemd.log
-StandardError=append:/home/pi/market-data-pipeline/logs/systemd.log
+# Logging - supervisor logs to stdout, journald captures it
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=daedalus
 
 # Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
+
+# Capabilities needed for network access
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

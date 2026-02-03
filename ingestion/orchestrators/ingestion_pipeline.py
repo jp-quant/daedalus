@@ -297,13 +297,42 @@ class IngestionPipeline:
                 if secs > 60:
                     logger.warning(f"  └─ No messages for {secs}s")
         
-        # Writer stats
+        # Writer stats with memory metrics
+        total_queue_full = 0
         for name, writer in self.writers.items():
             stats = writer.get_stats()
+            queue_size = stats.get('queue_size', 0)
+            queue_full = stats.get('queue_full_events', 0)
+            total_queue_full += queue_full
+            
+            # Calculate queue utilization percentage
+            queue_max = 50000  # Default from config
+            queue_pct = (queue_size / queue_max) * 100 if queue_max > 0 else 0
+            
             logger.info(
                 f"Writer {name}: written={stats.get('messages_written', 0):,}, "
-                f"queue={stats.get('queue_size', 0)}, flushes={stats.get('flushes', 0)}"
+                f"queue={queue_size} ({queue_pct:.1f}%), "
+                f"flushes={stats.get('flushes', 0)}, "
+                f"open_writers={stats.get('open_writers', 0)}"
             )
+            
+            # Show memory management stats
+            mem_cleanups = stats.get('memory_cleanups', 0)
+            gc_collects = stats.get('gc_collections', 0)
+            if mem_cleanups > 0:
+                logger.info(
+                    f"  └─ Memory: cleanups={mem_cleanups}, gc_runs={gc_collects}, "
+                    f"counters={stats.get('hour_counters_count', 0)}, "
+                    f"buffers={stats.get('partition_buffers_count', 0)}"
+                )
+            
+            # Warn on queue overflow events
+            if queue_full > 0:
+                logger.warning(f"  └─ ⚠️  Queue overflow events: {queue_full} (messages dropped!)")
+            
+            # Warn on high queue utilization
+            if queue_pct > 80:
+                logger.warning(f"  └─ ⚠️  Queue utilization high: {queue_pct:.1f}%")
         
         # Health summary
         total_collectors = len(self.collectors)
@@ -314,5 +343,8 @@ class IngestionPipeline:
         
         if unhealthy_collectors > 0:
             logger.warning(f"⚠️  {unhealthy_collectors} collector(s) unhealthy - check logs")
+        
+        if total_queue_full > 0:
+            logger.error(f"🚨 Total queue overflow events: {total_queue_full} - BACKPRESSURE DETECTED")
         
         logger.info("=" * 80)

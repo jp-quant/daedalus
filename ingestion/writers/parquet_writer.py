@@ -38,6 +38,7 @@ Architecture (Medallion):
 """
 import asyncio
 import atexit
+import gc
 import io
 import logging
 import os
@@ -88,6 +89,13 @@ _CLEANUP_DONE = False
 # With 3 channels × 20 symbols × 2 exchanges = 120 partitions, this gives headroom
 # Each PyArrow ParquetWriter holds 1 file descriptor
 MAX_OPEN_WRITERS = 350
+
+# Memory management: cleanup stale entries and force GC periodically (seconds)
+MEMORY_CLEANUP_INTERVAL = 300  # 5 minutes
+
+# Maximum age for hour_counters entries before cleanup (seconds)
+# Entries older than 2 hours are definitely stale
+HOUR_COUNTER_MAX_AGE_SECONDS = 7200
 
 
 # =============================================================================
@@ -385,7 +393,12 @@ class StreamingParquetWriter:
         # Hour-based segment naming per partition
         # NOTE: Hour is tracked PER-SEGMENT (stored in segment info dict),
         # NOT globally, to ensure all partitions rotate correctly on hour change
-        self.hour_counters: Dict[str, int] = {}
+        # Format: {counter_key: (counter_value, last_used_timestamp)}
+        self.hour_counters: Dict[str, tuple] = {}
+        
+        # Memory management
+        self._last_memory_cleanup = time.time()
+        self._last_gc_collect = time.time()
         
         # Statistics
         self.stats = {
@@ -396,6 +409,10 @@ class StreamingParquetWriter:
             "queue_full_events": 0,
             "errors": 0,
             "bytes_written": 0,
+            "memory_cleanups": 0,
+            "gc_collections": 0,
+            "stale_counters_cleaned": 0,
+            "stale_buffers_cleaned": 0,
         }
         
         # Writer task
@@ -553,6 +570,13 @@ class StreamingParquetWriter:
                         None, self._flush_all_partitions
                     )
                     last_flush_time = current_time
+                
+                # Periodic memory cleanup (runs in background)
+                if current_time - self._last_memory_cleanup >= MEMORY_CLEANUP_INTERVAL:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, self._periodic_memory_cleanup
+                    )
+                    self._last_memory_cleanup = current_time
             
             except asyncio.CancelledError:
                 break
@@ -928,10 +952,14 @@ class StreamingParquetWriter:
         for col in self.partition_by:
             counter_key += f"_{pv.get(col, 'unknown')}"
         
+        current_time = time.time()
         if counter_key not in self.hour_counters:
-            self.hour_counters[counter_key] = 0
-        self.hour_counters[counter_key] += 1
-        counter = self.hour_counters[counter_key]
+            self.hour_counters[counter_key] = (0, current_time)
+        
+        # Increment counter and update timestamp
+        old_count, _ = self.hour_counters[counter_key]
+        self.hour_counters[counter_key] = (old_count + 1, current_time)
+        counter = old_count + 1
         
         segment_name = f"segment_{current_hour}_{counter:05d}.parquet"
         
@@ -1176,11 +1204,73 @@ class StreamingParquetWriter:
         except OSError:
             pass  # Directory not empty or permission denied
     
+    def _periodic_memory_cleanup(self):
+        """
+        Periodic cleanup to prevent memory leaks during long-running operation.
+        
+        This method:
+        1. Removes stale entries from hour_counters (older than 2 hours)
+        2. Removes empty partition buffers
+        3. Forces garbage collection
+        
+        Called every MEMORY_CLEANUP_INTERVAL seconds from _writer_loop.
+        """
+        current_time = time.time()
+        
+        # 1. Clean up stale hour_counters entries
+        stale_counters = []
+        for key, (count, last_used) in list(self.hour_counters.items()):
+            if current_time - last_used > HOUR_COUNTER_MAX_AGE_SECONDS:
+                stale_counters.append(key)
+        
+        for key in stale_counters:
+            del self.hour_counters[key]
+        
+        if stale_counters:
+            self.stats["stale_counters_cleaned"] += len(stale_counters)
+            logger.debug(f"[StreamingParquetWriter] Cleaned {len(stale_counters)} stale hour counters")
+        
+        # 2. Clean up empty partition buffers (deques that are empty)
+        empty_buffers = [
+            key for key, buf in self._partition_buffers.items() 
+            if len(buf) == 0 and key not in self._partition_segments
+        ]
+        
+        for key in empty_buffers:
+            del self._partition_buffers[key]
+        
+        if empty_buffers:
+            self.stats["stale_buffers_cleaned"] += len(empty_buffers)
+            logger.debug(f"[StreamingParquetWriter] Cleaned {len(empty_buffers)} empty partition buffers")
+        
+        # 3. Clean up partition sizes for non-existent segments
+        orphan_sizes = [
+            key for key in self._partition_sizes.keys()
+            if key not in self._partition_segments
+        ]
+        for key in orphan_sizes:
+            del self._partition_sizes[key]
+        
+        # 4. Force garbage collection
+        collected = gc.collect()
+        self.stats["gc_collections"] += 1
+        self.stats["memory_cleanups"] += 1
+        
+        logger.info(
+            f"[StreamingParquetWriter] Memory cleanup: "
+            f"counters={len(self.hour_counters)}, "
+            f"buffers={len(self._partition_buffers)}, "
+            f"segments={len(self._partition_segments)}, "
+            f"gc_collected={collected}"
+        )
+    
     def get_stats(self) -> dict:
-        """Get writer statistics including open file handle count."""
+        """Get writer statistics including open file handle count and memory info."""
         return {
             **self.stats,
             "queue_size": self.queue.qsize(),
             "open_writers": len(self._partition_segments),
             "max_open_writers": MAX_OPEN_WRITERS,
+            "hour_counters_count": len(self.hour_counters),
+            "partition_buffers_count": len(self._partition_buffers),
         }
