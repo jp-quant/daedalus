@@ -75,6 +75,12 @@ class SupervisorConfig:
     restart_window: int = 3600  # 1 hour window for restart counting
     restart_cooldown: int = 30  # seconds between restarts
     
+    # Graceful shutdown timeouts (seconds)
+    # Ingestion needs more time to: stop collectors, drain queue, flush buffers,
+    # close Parquet writers, move files from active/ to ready/
+    ingestion_shutdown_timeout: int = 120  # 2 minutes for ingestion
+    sync_shutdown_timeout: int = 60  # 1 minute for sync
+    
     # Memory management
     gc_interval: int = 300  # Force GC every 5 minutes
     
@@ -273,8 +279,16 @@ class DaedalusSupervisor:
             logger.error(f"Failed to start {name}: {e}")
             return False
     
-    def stop_process(self, name: str, timeout: int = 30) -> bool:
-        """Stop a managed process gracefully."""
+    def stop_process(self, name: str, timeout: Optional[int] = None) -> bool:
+        """
+        Stop a managed process gracefully.
+        
+        Args:
+            name: Process name ('ingestion' or 'sync')
+            timeout: Override shutdown timeout. If None, uses per-process defaults:
+                     - ingestion: 120s (needs time to flush buffers, close writers)
+                     - sync: 60s
+        """
         if name not in self.processes:
             return True
         
@@ -283,8 +297,17 @@ class DaedalusSupervisor:
             logger.info(f"{name} not running")
             return True
         
+        # Use per-process timeout if not specified
+        if timeout is None:
+            if name == "ingestion":
+                timeout = self.config.ingestion_shutdown_timeout
+            elif name == "sync":
+                timeout = self.config.sync_shutdown_timeout
+            else:
+                timeout = 60  # default fallback
+        
         pid = info.pid
-        logger.info(f"Stopping {name} (PID: {pid})...")
+        logger.info(f"Stopping {name} (PID: {pid}, timeout={timeout}s)...")
         
         if self.dry_run:
             logger.info(f"[DRY RUN] Would stop PID {pid}")
@@ -294,12 +317,24 @@ class DaedalusSupervisor:
             # Send SIGTERM for graceful shutdown
             info.process.terminate()
             
-            # Wait for graceful shutdown
+            # Wait for graceful shutdown with progress logging
+            start_time = time.time()
             try:
-                info.process.wait(timeout=timeout)
-                logger.info(f"✓ {name} stopped gracefully")
+                # Check every 10 seconds and log progress
+                while True:
+                    try:
+                        info.process.wait(timeout=10)
+                        # Process exited
+                        elapsed = time.time() - start_time
+                        logger.info(f"✓ {name} stopped gracefully in {elapsed:.1f}s")
+                        break
+                    except subprocess.TimeoutExpired:
+                        elapsed = time.time() - start_time
+                        if elapsed >= timeout:
+                            raise subprocess.TimeoutExpired(cmd=name, timeout=timeout)
+                        logger.info(f"  Waiting for {name} to stop... ({elapsed:.0f}s/{timeout}s)")
             except subprocess.TimeoutExpired:
-                logger.warning(f"{name} didn't stop gracefully, killing...")
+                logger.warning(f"{name} didn't stop gracefully after {timeout}s, killing...")
                 info.process.kill()
                 info.process.wait(timeout=5)
             
