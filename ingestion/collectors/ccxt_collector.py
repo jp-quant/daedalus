@@ -1,14 +1,46 @@
-"""CCXT Pro Collector for streaming market data."""
+"""CCXT Pro Collector for streaming market data.
+
+Optimized for high-throughput WebSocket streaming:
+- Concurrent subscription initialization with staggered starts
+- Bulk subscription methods for exchanges that support them
+- Non-blocking writes with backpressure handling
+- Minimal CPU overhead in the hot path
+
+Architecture:
+    WebSocket -> CcxtCollector._bulk_loop() -> Writer.queue -> Parquet
+    
+    Each exchange gets one CcxtCollector instance.
+    Each channel/symbol batch gets one asyncio task (_bulk_loop or _symbol_loop).
+    All tasks share a single writer queue with backpressure.
+
+Performance Considerations:
+    - Capture timestamps immediately after recv() to minimize latency
+    - Avoid CPU work in the hot path (defer to writer)
+    - Use bulk methods when available (reduces connection overhead)
+    - Stagger subscription starts to avoid rate limits
+"""
 import asyncio
-import json
 import logging
-import ccxt.pro as ccxtpro
+import os
 from typing import List, Optional, Dict, Any
+
+import ccxt.pro as ccxtpro
 
 from .base_collector import BaseCollector
 from ..utils.time import utc_now
 
 logger = logging.getLogger(__name__)
+
+# Performance tuning constants
+# Stagger delay between subscription batches (ms) - prevents rate limiting
+SUBSCRIPTION_STAGGER_MS = 100
+
+# Default: No limit on concurrent subscription initializations
+# Set to a positive integer (e.g., 5) if exchange rate-limits during startup
+DEFAULT_MAX_CONCURRENT_SUBSCRIPTIONS = None
+
+# CPU cores available (used for thread pool sizing)
+CPU_COUNT = os.cpu_count() or 4
 
 
 class CcxtCollector(BaseCollector):
@@ -75,6 +107,12 @@ class CcxtCollector(BaseCollector):
         
         self.exchange = None
         self._tasks = []
+        
+        # Optional semaphore for controlled concurrent subscription initialization
+        # Set via options['max_concurrent_subscriptions'] if exchange rate-limits during startup
+        # None = no limit (default), positive int = limit concurrent handshakes
+        max_concurrent = self.options.get('max_concurrent_subscriptions', DEFAULT_MAX_CONCURRENT_SUBSCRIPTIONS)
+        self._subscription_semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent else None
 
     async def _collect(self):
         """
@@ -162,13 +200,25 @@ class CcxtCollector(BaseCollector):
             logger.info(f"Closed CCXT exchange {self.exchange_id}")
 
     async def _symbol_loop(self, method: str, symbol: str, start_delay: float = 0.0):
-        """Loop for a specific symbol and method."""
-        if start_delay > 0:
-            await asyncio.sleep(start_delay)
-            
-        logger.info(f"Starting {self.exchange_id} {method} {symbol}")
+        """
+        Loop for a specific symbol and method.
         
-        # Resolve internal channel name
+        Optionally uses semaphore to limit concurrent subscription initializations
+        if max_concurrent_subscriptions is set in options.
+        """
+        # Optional semaphore for exchanges that rate-limit during subscription setup
+        if self._subscription_semaphore:
+            async with self._subscription_semaphore:
+                if start_delay > 0:
+                    await asyncio.sleep(start_delay)
+                logger.info(f"Starting {self.exchange_id} {method} {symbol}")
+        else:
+            # No semaphore - initialize immediately (maximum throughput)
+            if start_delay > 0:
+                await asyncio.sleep(start_delay)
+            logger.info(f"Starting {self.exchange_id} {method} {symbol}")
+        
+        # Resolve internal channel name (outside semaphore - fast operation)
         channel_type = self.METHOD_TO_CHANNEL.get(method, method.replace("watch", "").lower())
         
         while not self._shutdown.is_set():
@@ -255,11 +305,25 @@ class CcxtCollector(BaseCollector):
                 await asyncio.sleep(self.reconnect_delay)
 
     async def _bulk_loop(self, method: str, bulk_method: str, symbols: List[str], start_delay: float = 0.0):
-        """Loop for bulk subscription methods."""
-        if start_delay > 0:
-            await asyncio.sleep(start_delay)
-            
-        logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
+        """
+        Loop for bulk subscription methods.
+        
+        Optionally uses semaphore to limit concurrent subscription initializations
+        if max_concurrent_subscriptions is set in options.
+        """
+        # Optional semaphore for exchanges that rate-limit during subscription setup
+        if self._subscription_semaphore:
+            async with self._subscription_semaphore:
+                if start_delay > 0:
+                    await asyncio.sleep(start_delay)
+                logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
+        else:
+            # No semaphore - initialize immediately (maximum throughput)
+            if start_delay > 0:
+                await asyncio.sleep(start_delay)
+            logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
+        
+        # Resolve channel type (outside semaphore - fast operation)
         channel_type = self.METHOD_TO_CHANNEL.get(method, method.replace("watch", "").lower())
         
         while not self._shutdown.is_set():

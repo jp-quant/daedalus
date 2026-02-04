@@ -58,7 +58,19 @@ logger = logging.getLogger("daedalus.supervisor")
 
 @dataclass
 class SupervisorConfig:
-    """Configuration for the supervisor."""
+    """
+    Configuration for the supervisor.
+    
+    Performance Tuning:
+        - process_nice: Unix process priority (-20 to 19, lower = higher priority)
+        - cpu_affinity: Pin processes to specific CPU cores for cache efficiency
+        - io_priority: I/O scheduling class for disk operations
+    
+    Memory Management:
+        - memory_warning_mb: Log warning when memory exceeds this threshold
+        - memory_critical_mb: Force restart when memory exceeds this threshold
+        - gc_interval: Force garbage collection every N seconds
+    """
     # Process settings
     enable_ingestion: bool = True
     enable_sync: bool = True
@@ -83,6 +95,14 @@ class SupervisorConfig:
     
     # Memory management
     gc_interval: int = 300  # Force GC every 5 minutes
+    
+    # Process priority and affinity (Linux/Unix only)
+    # Set process_nice to lower value for higher priority (-20 to 19)
+    # Requires root for values < 0
+    process_nice: int = 0  # Default: normal priority
+    # CPU affinity: list of CPU core indices to pin processes to
+    # Empty list = use all available cores
+    cpu_affinity: List[int] = field(default_factory=list)
     
     # Paths
     project_dir: Path = field(default_factory=lambda: PROJECT_DIR)
@@ -214,8 +234,42 @@ class DaedalusSupervisor:
             cmd.append("--no-compact")
         return cmd
     
+    def _apply_process_priority(self, pid: int, name: str):
+        """
+        Apply CPU affinity and process priority settings.
+        
+        Only works on Linux/Unix systems with psutil installed.
+        Silently skips on Windows or if psutil unavailable.
+        """
+        try:
+            import psutil
+            proc = psutil.Process(pid)
+            
+            # Set process priority (nice value)
+            if self.config.process_nice != 0:
+                try:
+                    proc.nice(self.config.process_nice)
+                    logger.debug(f"Set {name} nice value to {self.config.process_nice}")
+                except (psutil.AccessDenied, PermissionError):
+                    logger.warning(
+                        f"Cannot set nice value for {name} - requires elevated privileges"
+                    )
+            
+            # Set CPU affinity if specified
+            if self.config.cpu_affinity:
+                try:
+                    proc.cpu_affinity(self.config.cpu_affinity)
+                    logger.debug(f"Set {name} CPU affinity to cores {self.config.cpu_affinity}")
+                except (psutil.AccessDenied, PermissionError, AttributeError):
+                    logger.warning(f"Cannot set CPU affinity for {name}")
+                    
+        except ImportError:
+            pass  # psutil not available
+        except Exception as e:
+            logger.debug(f"Could not apply process priority for {name}: {e}")
+    
     def start_process(self, name: str, cmd: List[str], log_file: Path) -> bool:
-        """Start a managed process."""
+        """Start a managed process with optional CPU affinity and priority."""
         if name in self.processes and self.processes[name].is_running:
             logger.warning(f"{name} already running (PID: {self.processes[name].pid})")
             return True
@@ -260,6 +314,9 @@ class DaedalusSupervisor:
             info = self.processes[name]
             info.process = process
             info.start_time = time.time()
+            
+            # Apply CPU affinity and priority (best-effort)
+            self._apply_process_priority(process.pid, name)
             
             # Save PID file
             pid_file = self.config.pid_dir / f"{name}.pid"

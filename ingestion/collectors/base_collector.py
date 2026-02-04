@@ -1,4 +1,43 @@
-"""Base collector interface."""
+"""
+Base collector interface for market data streaming.
+
+Design Philosophy:
+    Collectors are PURE I/O - they only:
+    1. Connect to data sources (WebSocket, REST)
+    2. Capture raw messages with timestamps
+    3. Push to writer queue (non-blocking)
+    4. Handle reconnection logic
+    
+    NO processing, transformation, or business logic.
+    This separation ensures:
+    - Minimal latency in the hot path
+    - Easy testing and mocking
+    - Collector-agnostic writer implementation
+
+Reconnection Strategy:
+    Uses exponential backoff with jitter to avoid thundering herd:
+    - Base delay: 5s
+    - Exponential growth: 5s → 10s → 20s → 40s → ...
+    - Maximum delay: 5 minutes
+    - Jitter: ±20% to spread reconnection attempts
+    - For 24/7 operation, use max_reconnect_attempts=-1 (infinite)
+
+Health Tracking:
+    - Messages received counter
+    - Last message timestamp (for staleness detection)
+    - Connection state (connected/disconnected)
+    - Error history for debugging
+
+Subclass Implementation:
+    Override _collect() to implement source-specific logic:
+    
+    async def _collect(self):
+        async with websockets.connect(url) as ws:
+            while not self._shutdown.is_set():
+                msg = await ws.recv()
+                await self.log_writer.write(msg, block=False)
+                self._mark_message_received()
+"""
 import asyncio
 import logging
 from abc import ABC, abstractmethod
@@ -19,6 +58,14 @@ class BaseCollector(ABC):
     - Capture raw messages
     - Push to LogWriter queue
     - Zero processing/transformation
+    
+    Attributes:
+        source_name: Identifier for logging and metrics
+        log_writer: Writer instance for data persistence
+        auto_reconnect: Enable automatic reconnection on disconnect
+        max_reconnect_attempts: -1 for infinite (24/7 operation)
+        reconnect_delay: Base delay between reconnection attempts
+        stats: Dictionary of health/performance metrics
     """
     
     def __init__(
@@ -33,8 +80,8 @@ class BaseCollector(ABC):
         Initialize base collector.
         
         Args:
-            source_name: Identifier for this data source
-            log_writer: LogWriter instance to push messages to
+            source_name: Identifier for this data source (e.g., "ccxt_binance")
+            log_writer: Writer instance to push messages to (LogWriter or StreamingParquetWriter)
             auto_reconnect: Whether to automatically reconnect on disconnect
             max_reconnect_attempts: Maximum reconnection attempts (-1 for infinite)
             reconnect_delay: Initial seconds to wait between reconnect attempts
@@ -69,7 +116,12 @@ class BaseCollector(ABC):
         )
     
     async def start(self):
-        """Start the collector task."""
+        """
+        Start the collector task.
+        
+        Creates an asyncio Task that runs the _run() loop.
+        Safe to call multiple times - will warn if already running.
+        """
         if self._collector_task is not None:
             logger.warning(f"[{self.source_name}] Collector already running")
             return
@@ -79,7 +131,12 @@ class BaseCollector(ABC):
         logger.info(f"[{self.source_name}] Collector started")
     
     async def stop(self):
-        """Stop the collector task."""
+        """
+        Stop the collector task gracefully.
+        
+        Sets shutdown event and waits up to 10s for clean exit.
+        If timeout, forcefully cancels the task.
+        """
         if self._collector_task is None:
             return
         
@@ -95,7 +152,16 @@ class BaseCollector(ABC):
         logger.info(f"[{self.source_name}] Collector stopped. Stats: {self.stats}")
     
     async def _run(self):
-        """Main collector loop with exponential backoff reconnection logic."""
+        """
+        Main collector loop with exponential backoff reconnection logic.
+        
+        Flow:
+        1. Increment connection attempt counter
+        2. Call _collect() (subclass implementation)
+        3. On clean exit: calculate backoff, sleep, retry
+        4. On error: log, calculate backoff, sleep, retry
+        5. Repeat until shutdown or max attempts reached
+        """
         attempt = 0
         consecutive_failures = 0
         connection_start_time = 0.0

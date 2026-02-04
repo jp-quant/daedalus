@@ -45,8 +45,9 @@ This document provides a map of all documentation and quick access to key inform
 
 | Document | Purpose | Read When |
 |----------|---------|-----------|
+| [`INGESTION_ENGINE.md`](INGESTION_ENGINE.md) | **NEW** Complete ingestion engine architecture | Understanding data collection |
 | [`INGESTION_MEMORY_FLUSHING_REVIEW.md`](INGESTION_MEMORY_FLUSHING_REVIEW.md) | Memory, flushing, startup migration | Production deployment/optimization |
-| [`PI4_DEPLOYMENT.md`](PI4_DEPLOYMENT.md) | **NEW** Complete Raspberry Pi 4 deployment guide | Setting up 24/7 operation on Pi4 |
+| [`PI4_DEPLOYMENT.md`](PI4_DEPLOYMENT.md) | Complete Raspberry Pi 4 deployment guide | Setting up 24/7 operation on Pi4 |
 
 ### ETL & Data Processing
 

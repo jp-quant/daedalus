@@ -2,6 +2,37 @@
 Ingestion Pipeline Orchestrator.
 
 Manages multiple data collectors and coordinates data writing across sources.
+
+Architecture:
+    IngestionPipeline
+    ├── Storage Backend (local or S3)
+    ├── Writers Dict[source_name → Writer]
+    │   └── StreamingParquetWriter or LogWriter
+    └── Collectors List[BaseCollector]
+        ├── CoinbaseCollector
+        └── CcxtCollector (one per exchange)
+
+Lifecycle:
+    1. start() - Initialize storage, create writers, spawn collectors
+    2. wait_for_shutdown() - Block until shutdown signal
+    3. stop() - Stop collectors first (drain connections), then writers (flush data)
+
+Thread Safety:
+    - Collectors run in separate asyncio tasks
+    - Writers have internal bounded queues for backpressure
+    - Shutdown is coordinated via asyncio.Event
+
+Performance Considerations:
+    - Single writer per source (all exchanges share one ccxt writer)
+    - Collectors are I/O-bound (WebSocket recv)
+    - Writers are I/O-bound (disk writes via thread pool)
+
+Example:
+    config = load_config()
+    pipeline = IngestionPipeline(config, sources=["ccxt"])
+    await pipeline.start()
+    await pipeline.wait_for_shutdown()  # Block until Ctrl+C
+    await pipeline.stop()
 """
 import asyncio
 import logging
