@@ -2,7 +2,9 @@
 
 **Production-grade cryptocurrency market data infrastructure for quantitative trading**
 
-Daedalus is a comprehensive market data ingestion, processing, and feature engineering pipeline designed for **mid-frequency quantitative crypto trading** (5-second to 4-hour horizons). Built for reliability and efficiency, it runs seamlessly from Raspberry Pi to high-end servers, with hybrid local/cloud storage support.
+> *Last Updated: February 2026*
+
+Daedalus is a comprehensive market data ingestion, processing, and feature engineering pipeline designed for **mid-frequency quantitative crypto trading** (5-second to 4-hour horizons). Built for reliability and efficiency, it runs seamlessly from Raspberry Pi 4 to high-end workstations (ROG Flow Z13), with hybrid local/cloud storage support.
 
 **Key Differentiators:**
 - 🎯 **Mid-frequency focus**: Optimized for seconds-to-hours trading, not HFT
@@ -11,6 +13,8 @@ Daedalus is a comprehensive market data ingestion, processing, and feature engin
 - 🌐 **Multi-exchange**: Unified CCXT Pro interface to 100+ exchanges
 - 💾 **Hybrid storage**: Local + S3 with seamless syncing and compaction
 - ⚙️ **Config-driven**: Zero-code feature customization via YAML
+- 🔬 **Research-ready**: ASOF resampling, multi-asset alignment, Polars lazy evaluation
+- 🍓 **Pi4-optimized**: 24/7 operation on Raspberry Pi with memory management
 
 ---
 
@@ -19,6 +23,7 @@ Daedalus is a comprehensive market data ingestion, processing, and feature engin
 - [Quick Start](#-quick-start)
 - [Architecture](#-architecture)
 - [ETL Framework](#-etl-framework)
+- [Research & Analysis](#-research--analysis)
 - [Features](#-features)
 - [Installation](#-installation)
 - [Configuration](#%EF%B8%8F-configuration)
@@ -27,8 +32,8 @@ Daedalus is a comprehensive market data ingestion, processing, and feature engin
 - [Directory Structure](#-directory-structure)
 - [Feature Engineering](#-feature-engineering)
 - [Monitoring](#-monitoring)
-- [Production Setup](#-production-setup)
-- [Troubleshooting](#-troubleshooting)
+- [Pi4 Production Deployment](#-pi4-production-deployment)
+- [Troubleshooting & Diagnostics](#-troubleshooting--diagnostics)
 - [Development](#-development)
 
 ---
@@ -43,49 +48,41 @@ pip install -r requirements.txt
 cp config/config.examples.yaml config/config.yaml
 # Edit config/config.yaml with your exchange credentials and processor_options
 
-# 3. Start live ingestion (Terminal 1)
+# 3. Start live ingestion via Daedalus Supervisor (recommended)
+python scripts/daedalus_supervisor.py --sources ccxt
+
+# OR start ingestion directly (for development)
 python scripts/run_ingestion.py --sources ccxt
 
-# 4. Start continuous ETL + feature engineering (Terminal 2)
+# 4. Start continuous ETL + feature engineering (separate terminal)
 python scripts/etl/run_watcher.py --poll-interval 30
 
 # 5. (Alternative) Run batch feature engineering
 python scripts/etl/run_orderbook_features.py --input data/raw/ready/ccxt/orderbook --output data/processed
 
-# 6. Start local → S3 sync (Terminal 3, optional)
-python storage/sync.py upload processed/ccxt/ s3://my-bucket/processed/ccxt/
-
-# 7. Run compaction for older data (Terminal 4, periodic)
-python scripts/run_compaction.py --source ccxt --partition exchange=binanceus/symbol=BTC-USDT
-
-# 8. Query processed features
+# 6. Query processed features
 python scripts/query_parquet.py data/processed/ccxt/orderbook/hf
-
-# 9. Check system health
-python scripts/check_health.py
 ```
 
-**Typical Production Setup:**
-- **Terminal 1**: `run_ingestion.py` (continuous WebSocket collection → Bronze Parquet)
-- **Terminal 2**: `scripts/etl/run_watcher.py` (near-real-time feature engineering)
-- **Terminal 3**: Periodic `storage/sync.py` (local → S3 backup)
-- **Terminal 4**: Daily `run_compaction.py` (merge small files)
+**Typical Production Setup (Pi4):**
+- **systemd service**: `daedalus.service` runs supervisor (ingestion + sync)
+- **ETL watcher**: `run_watcher.py` for continuous feature engineering
+- **Periodic compaction**: `run_compaction.py` to merge small files
 
 **Data flow**: WebSocket → Raw Parquet (Bronze) → Feature-Engineered Parquet (Silver/Gold)
 
 **Output structure**:
 ```
 data/
-  raw/ready/ccxt/                    # Bronze Layer (raw data preserved)
-    ├── ticker/segment_*.parquet
-    ├── trades/segment_*.parquet
-    └── orderbook/segment_*.parquet
-  processed/ccxt/                    # Silver/Gold Layer (features)
-    ├── ticker/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
-    ├── trades/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
-    └── orderbook/
-        ├── hf/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
-        └── bars/exchange=binanceus/symbol=BTC-USDT/date=2025-12-09/part_*.parquet
+  raw/                               # Bronze Layer (raw data preserved)
+    ├── active/ccxt/orderbook/...    # Currently writing
+    └── ready/ccxt/orderbook/...     # Closed, ready for ETL
+  processed/                         # Silver/Gold Layer (features)
+    └── silver/orderbook/
+        └── exchange=coinbaseadvanced/
+            └── symbol=BTC-USD/
+                └── year=2026/month=2/day=3/
+                    └── part_*.parquet
 ```
 
 ---
@@ -116,27 +113,28 @@ Daedalus follows a **Medallion Architecture** (Bronze → Silver → Gold) that 
 **Purpose**: Durable raw data landing with compression and size-based rotation
 
 **Design**:
-- Pulls from asyncio queue
-- Batches records (configurable size)
+- Pulls from asyncio queue via **dedicated I/O thread pool**
+- Batches records (configurable size) with efficient non-blocking queue drain
 - Writes directly to **Parquet format** (5-10x smaller than NDJSON)
-- Channel-separated files (ticker/, trades/, orderbook/)
-- **Rotates when segment reaches size limit** (default: 50 MB)
+- **Directory-aligned partitioning**: `exchange/symbol/year/month/day/hour`
+- **Rotates when segment reaches size limit** (default: 100 MB) or hour changes
 - Atomic move from `active/` → `ready/` directory
 - ZSTD compression (configurable level)
-- **Preserves ALL raw data** for replay/reprocessing
-- **Unified storage backend** (works with local filesystem or S3)
+- **LRU-based writer eviction** to prevent file descriptor exhaustion
+- **Automatic memory cleanup** with periodic GC
 
-**Why Parquet for raw data?**
-- Preserve raw data to iterate on features without re-collecting
-- 5-10x smaller than NDJSON with ZSTD compression
-- Columnar format - can read just needed columns
-- Typed schema - no JSON parsing overhead
+**Performance tuning (configurable)**:
+```python
+MAX_OPEN_WRITERS = 350            # Concurrent Parquet file handles
+IO_THREAD_POOL_SIZE = min(32, CPU_COUNT * 4)  # I/O threads
+MEMORY_CLEANUP_INTERVAL = 300     # GC every 5 minutes
+```
 
 **Key files**: `ingestion/writers/parquet_writer.py`
 
 **Segment naming**: `segment_<YYYYMMDDTHH>_<COUNTER>.parquet`
 - Counter resets each hour (prevents overflow)
-- Example: `segment_20251209T14_00042.parquet` = 42nd segment at 2PM
+- Example: `segment_20260203T14_00042.parquet` = 42nd segment at 2PM
 
 ### Layer 3: ETL Workers (SILVER/GOLD LAYERS)
 
@@ -273,6 +271,69 @@ executor = TransformExecutor.from_config(config)
 - Zhang et al. (2019): DeepLOB deep book features
 - Xu et al. (2019): Multi-level OFI
 - Easley et al. (2012): VPIN for flow toxicity
+
+---
+
+## 🔬 Research & Analysis
+
+### ASOF Resampling (Point-in-Time Safe)
+
+The `etl/utils/resampling.py` module provides ML/backtesting-safe resampling:
+
+```python
+from etl.utils.resampling import resample_orderbook, resample_timeseries
+
+# Resample orderbook to 1-second bars (ASOF semantics)
+resampled = resample_orderbook(orderbook_lf, frequency="1s")
+
+# Generic timeseries resampling
+resampled = resample_timeseries(df, frequency="5m", value_cols=["mid_price", "spread"])
+```
+
+**Key properties:**
+- **No lookahead bias**: Each timestamp T contains only data available BEFORE T
+- **Staleness detection**: Optional `max_staleness` flag for data gaps
+- **Lazy evaluation**: Works with Polars LazyFrames for massive datasets
+
+### Multi-Asset Alignment (Cross-Asset Modeling)
+
+Build horizontally concatenated DataFrames for multi-asset analysis:
+
+```python
+import polars as pl
+from etl.utils.resampling import resample_timeseries
+
+# Scan all symbols lazily (hive partitioning)
+ROOT_PL_DF = pl.scan_parquet("data/processed/silver/orderbook/**/*.parquet", hive_partitioning=True)
+ALL_SYMBOLS = ROOT_PL_DF.select("symbol").unique().collect().to_series().to_list()
+
+def build_multi_asset_lf(root_lf, symbols, frequency="1s"):
+    """Build wide-format DataFrame: timestamp + {symbol}_{feature} columns."""
+    
+    def process_symbol(symbol):
+        symbol_lf = root_lf.filter(pl.col("symbol") == symbol)
+        resampled = resample_timeseries(symbol_lf, frequency=frequency, group_cols=[])
+        # Rename columns with symbol prefix
+        prefix = symbol.replace("/", "_").replace("-", "_")
+        return resampled.rename({col: f"{prefix}_{col}" for col in feature_cols})
+    
+    # Fold-join all symbols on timestamp (inner join = complete rows only)
+    result = process_symbol(symbols[0])
+    for symbol in symbols[1:]:
+        result = result.join(process_symbol(symbol), on="timestamp", how="inner")
+    
+    return result.sort("timestamp")
+
+# Build and collect (single materialization point)
+multi_asset_lf = build_multi_asset_lf(ROOT_PL_DF, ALL_SYMBOLS, "1s")
+multi_asset_df = multi_asset_lf.collect()  # Only collect at the end
+```
+
+**For memory-constrained scenarios:**
+- Use `lf.sink_parquet()` for streaming to disk
+- Process in time-based chunks (1 day at a time)
+
+See `research/01_orderbook_feature_analysis.ipynb` for complete examples.
 
 ---
 
@@ -536,10 +597,10 @@ Daedalus/
 ├── ingestion/              # Layer 1 & 2: Data collection
 │   ├── collectors/         # WebSocket collectors (I/O only)
 │   │   ├── base_collector.py
-│   │   ├── ccxt_collector.py    # CCXT Pro multi-exchange
+│   │   ├── ccxt_collector.py    # CCXT Pro multi-exchange (optimized)
 │   │   └── coinbase_ws.py       # Native Coinbase WebSocket
-│   ├── writers/            # Log writers with rotation
-│   │   └── log_writer.py        # Unified local/S3 writer
+│   ├── writers/            # Streaming writers with rotation
+│   │   └── parquet_writer.py    # StreamingParquetWriter (ThreadPoolExecutor)
 │   ├── orchestrators/      # Pipeline coordination
 │   │   └── ingestion_pipeline.py
 │   └── utils/              # Utilities
@@ -547,6 +608,11 @@ Daedalus/
 │       └── serialization.py
 │
 ├── etl/                    # Layer 3: Transformation
+│   ├── core/               # Core framework (NEW)
+│   │   ├── base.py         # BaseTransform abstract class
+│   │   ├── config.py       # FilterSpec, FeatureConfig
+│   │   ├── executor.py     # TransformExecutor orchestrator
+│   │   └── registry.py     # @register_transform decorator
 │   ├── readers/            # Data loading
 │   │   ├── ndjson_reader.py
 │   │   └── parquet_reader.py
@@ -555,11 +621,7 @@ Daedalus/
 │   │   │   ├── advanced_orderbook_processor.py  # HF features + bars
 │   │   │   ├── ticker_processor.py
 │   │   │   └── trades_processor.py
-│   │   ├── coinbase/       # Coinbase-specific (legacy)
 │   │   └── raw_processor.py
-│   ├── parsers/            # Parse NDJSON segments
-│   │   ├── ccxt_parser.py
-│   │   └── coinbase_parser.py
 │   ├── writers/            # Parquet writers
 │   │   └── parquet_writer.py    # Unified local/S3 writer
 │   ├── orchestrators/      # Pipeline composition
@@ -568,9 +630,8 @@ Daedalus/
 │   │   └── ccxt_segment_pipeline.py
 │   ├── features/           # Feature engineering
 │   │   ├── orderbook.py    # Vectorized orderbook features
-│   │   ├── stateful.py     # Stateful (sequential) features: OFI/MLOFI/TFI/Kyle/VPIN
-│   │   ├── streaming.py    # Rolling statistics primitives
-│   │   └── archived/       # Legacy files (snapshot.py, state.py) - deprecated
+│   │   ├── stateful.py     # Stateful features: OFI/MLOFI/TFI/Kyle/VPIN
+│   │   └── streaming.py    # Rolling statistics primitives
 │   ├── transforms/         # Channel transforms
 │   │   ├── ticker.py       # Ticker feature transform
 │   │   ├── trades.py       # Trades feature transform
@@ -579,30 +640,36 @@ Daedalus/
 │   ├── utils/              # ETL utilities
 │   │   ├── state_manager.py # Checkpoint/resume + graceful shutdown
 │   │   ├── compaction.py   # File compaction
+│   │   ├── resampling.py   # ASOF resampling (NEW)
 │   │   └── crud.py         # CRUD operations
-│   ├── repartitioner.py    # Compaction & repartitioning
-│   ├── parquet_crud.py     # CRUD operations
 │   └── job.py              # ETL orchestration
 │
 ├── storage/                # Storage abstraction
 │   ├── base.py             # StorageBackend, LocalStorage, S3Storage
-│   └── factory.py          # Backend factory & path utilities
+│   ├── factory.py          # Backend factory & path utilities
+│   └── sync.py             # S3 sync utilities
+│
+├── shared/                 # Shared utilities
+│   └── partitioning.py     # Partition alignment helpers
 │
 ├── config/                 # Configuration
 │   ├── config.py           # Pydantic models
 │   └── config.examples.yaml
 │
 ├── scripts/                # Entry points
+│   ├── daedalus_supervisor.py  # Process supervisor (Pi4)
+│   ├── daedalus.service    # systemd service file
 │   ├── run_ingestion.py    # Start ingestion
-│   ├── run_etl.py          # Run ETL (manual)
+│   ├── run_sync.py         # S3 sync
 │   ├── run_compaction.py   # Compact Parquet files
-│   ├── check_health.py     # Health check
-│   ├── query_parquet.py    # Query examples
 │   └── etl/                # ETL scripts
 │       ├── run_orderbook_features.py  # Batch orderbook features
 │       ├── run_trades_features.py     # Batch trades features
 │       ├── run_ticker_features.py     # Batch ticker features
 │       └── run_watcher.py             # Continuous ETL watcher
+│
+├── research/               # Research notebooks
+│   └── 01_orderbook_feature_analysis.ipynb  # Multi-asset analysis
 │
 └── tests/                  # Test suite
 ```
@@ -611,32 +678,22 @@ Daedalus/
 
 ```
 data/
-├── raw/                    # Raw NDJSON segments
+├── raw/                    # Bronze Layer (Parquet segments)
 │   ├── active/ccxt/        # Currently being written
-│   │   └── segment_20251209T14_00001.ndjson
+│   │   └── orderbook/
+│   │       └── exchange=coinbaseadvanced/
+│   │           └── symbol=BTC-USD/
+│   │               └── year=2026/month=2/day=3/hour=14/
+│   │                   └── segment_20260203T14_00001.parquet
 │   ├── ready/ccxt/         # Closed segments (ready for ETL)
-│   │   ├── segment_20251209T14_00001.ndjson
-│   │   └── segment_20251209T14_00002.ndjson
 │   └── processing/ccxt/    # Temp during ETL
 │
-└── processed/ccxt/         # Parquet files (Hive-style partitioning)
-    ├── ticker/
-    │   └── exchange=binanceus/
-    │       └── symbol=BTC-USDT/
-    │           └── date=2025-12-09/
-    │               └── part_*.parquet
-    ├── trades/
-    │   └── exchange=binanceus/
-    │       └── symbol=BTC-USDT/
-    │           └── date=2025-12-09/
-    │               └── part_*.parquet
-    └── orderbook/
-        ├── hf/             # High-frequency features (10Hz)
-        │   └── exchange=binanceus/
-        │       └── symbol=BTC-USDT/
-        │           └── date=2025-12-09/
-        │               └── part_*.parquet
-        └── bars/           # Time bars (1s, 5s, 30s, 60s)
+└── processed/              # Silver/Gold Layer (Feature-engineered)
+    └── silver/
+        └── orderbook/
+            └── exchange=coinbaseadvanced/
+                └── symbol=BTC-USD/
+                    └── year=2026/month=2/day=3/
             └── exchange=binanceus/
                 └── symbol=BTC-USDT/
                     └── date=2025-12-09/
@@ -702,6 +759,18 @@ For each duration (60s, 300s, 900s, 3600s):
 python scripts/check_health.py
 ```
 
+## 📊 Monitoring
+
+### Health Check
+
+```bash
+# Quick pipeline status
+python scripts/daedalus_supervisor.py --status
+
+# Detailed health check
+python scripts/check_health.py
+```
+
 ### Check Segment Status
 
 ```bash
@@ -712,97 +781,331 @@ ls -lh data/raw/active/ccxt/
 ls -lh data/raw/ready/ccxt/
 
 # Count backlog
-ls data/raw/ready/ccxt/ | wc -l
+find data/raw/ready -name "*.parquet" | wc -l
 ```
+
+### Writer Statistics
+
+The ingestion engine exposes health metrics via logs:
+
+```
+================================================================================
+Pipeline Statistics
+================================================================================
+✓ 🟢 ccxt_coinbaseadvanced: msgs=1,234,567, errors=0, reconnects=2, uptime=86400s
+Writer ccxt: written=1,234,567, queue=1234 (2.5%), flushes=12345, open_writers=42
+  └─ Memory: cleanups=288, gc_runs=288, counters=24, buffers=42
+================================================================================
+Health: 1/1 collectors healthy
+================================================================================
+```
+
+### Key Indicators
+
+| Metric | Healthy Range | Action if Unhealthy |
+|--------|---------------|---------------------|
+| Queue % | < 80% | Increase batch_size or add resources |
+| Open writers | < 350 | Reduce symbol count or increase MAX_OPEN_WRITERS |
+| Memory (MB) | < 3000 | Check for leaks, reduce partition count |
+| Reconnections | Low | Network issues if frequent |
 
 ### Compaction
 
 Consolidate small Parquet files for better query performance:
 
 ```bash
-python scripts/run_compaction.py data/processed/ccxt/orderbook/bars \
+python scripts/run_compaction.py data/processed/silver/orderbook \
     --target-file-count 1 \
     --min-file-count 2
 ```
 
 ---
 
-## 🚀 Production Setup
+## 🚀 Pi4 Production Deployment
 
-### Option 1: Separate Terminal Windows
+### Quick Deploy (Fresh Install)
 
 ```bash
-# Terminal 1: Ingestion (always running)
-python scripts/run_ingestion.py --source ccxt
+# 1. Update code
+cd ~/market-data-pipeline
+git pull  # or scp/rsync updated files
 
-# Terminal 2: Continuous ETL (always running)
-python scripts/etl/run_watcher.py --poll-interval 30
+# 2. Install dependencies
+source venv/bin/activate
+pip install psutil  # Required for supervisor memory monitoring
 
-# Terminal 3: Monitor health (periodic)
-watch -n 300 python scripts/check_health.py
+# 3. Install/update systemd service
+sudo cp scripts/daedalus.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable daedalus
+sudo systemctl restart daedalus
+
+# 4. Verify it's running
+sudo systemctl status daedalus
+journalctl -u daedalus -f  # Follow logs
 ```
 
-### Option 2: systemd Services (Linux)
+### Monitoring Logs
 
-**Ingestion service**: `/etc/systemd/system/daedalus-ingestion.service`
+```bash
+# Watch both ingestion and sync logs simultaneously
+tail -f ~/market-data-pipeline/logs/ingestion.log ~/market-data-pipeline/logs/sync.log
 
-```ini
-[Unit]
-Description=Daedalus Ingestion Pipeline
-After=network.target
+# Or in separate terminals:
+# Terminal 1: Ingestion
+tail -f ~/market-data-pipeline/logs/ingestion.log
 
-[Service]
-Type=simple
-User=youruser
-WorkingDirectory=/path/to/Daedalus
-ExecStart=/usr/bin/python3 scripts/run_ingestion.py --source ccxt
-Restart=always
-RestartSec=10
+# Terminal 2: Sync
+tail -f ~/market-data-pipeline/logs/sync.log
 
-[Install]
-WantedBy=multi-user.target
+# Check supervisor status
+python scripts/daedalus_supervisor.py --status
 ```
 
-**ETL service**: `/etc/systemd/system/daedalus-etl-watcher.service`
+### Service Management
 
-```ini
-[Unit]
-Description=Daedalus ETL Watcher
-After=network.target
+```bash
+# Start/stop/restart
+sudo systemctl start daedalus
+sudo systemctl stop daedalus
+sudo systemctl restart daedalus
 
-[Service]
-Type=simple
-User=youruser
-WorkingDirectory=/path/to/Daedalus
-ExecStart=/usr/bin/python3 scripts/etl/run_watcher.py --poll-interval 30
-Restart=always
-RestartSec=10
+# View service status
+sudo systemctl status daedalus
 
-[Install]
-WantedBy=multi-user.target
+# View recent logs
+journalctl -u daedalus -n 100
+
+# Follow logs in real-time
+journalctl -u daedalus -f
+
+# View logs since last boot
+journalctl -u daedalus -b
+```
+
+### Supervisor Configuration
+
+The `daedalus_supervisor.py` manages both ingestion and sync processes:
+
+```python
+# Key settings in SupervisorConfig (scripts/daedalus_supervisor.py)
+memory_warning_mb: int = 3000     # Log warning at 3GB
+memory_critical_mb: int = 3500    # Force restart at 3.5GB
+ingestion_shutdown_timeout: int = 120  # 2 min for graceful flush
+gc_interval: int = 300            # Force GC every 5 minutes
+
+# Optional CPU tuning (Linux only)
+process_nice: int = 0             # -20 (high priority) to 19 (low)
+cpu_affinity: List[int] = []      # Pin to specific cores
+```
+
+### Pi4 Optimization Guide
+
+#### 1. Remove Bloatware (Maximize Resources for Backend)
+
+```bash
+# Remove GUI and desktop environment (saves ~500MB RAM)
+sudo apt purge --auto-remove xserver* lightdm* raspberrypi-ui-mods \
+    pi-greeter rpd-plym-splash chromium-browser vlc thonny geany \
+    realvnc-vnc-server scratch* sonic-pi minecraft-pi libreoffice* -y
+
+# Remove unused services
+sudo systemctl disable cups cups-browsed avahi-daemon bluetooth \
+    triggerhappy ModemManager wpa_supplicant  # if using ethernet only
+
+# Remove orphaned packages
+sudo apt autoremove -y
+sudo apt clean
+
+# Disable swap file GUI
+sudo systemctl disable dphys-swapfile
+```
+
+#### 2. Configure Swap (Essential for Long-Running)
+
+```bash
+# Check current swap
+free -h
+
+# Configure 2GB swap (recommended)
+sudo dphys-swapfile swapoff
+sudo nano /etc/dphys-swapfile
+# Set: CONF_SWAPSIZE=2048
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+
+# Verify
+free -h
+```
+
+#### 3. Optimize Memory Settings
+
+```bash
+# Reduce GPU memory (headless server doesn't need it)
+sudo nano /boot/config.txt
+# Add: gpu_mem=16
+
+# Reduce kernel memory pressure
+sudo nano /etc/sysctl.conf
+# Add:
+#   vm.swappiness=10
+#   vm.vfs_cache_pressure=50
+
+sudo sysctl -p
+```
+
+#### 4. Disable Unnecessary Services
+
+```bash
+# List enabled services
+systemctl list-unit-files --state=enabled
+
+# Disable unused ones
+sudo systemctl disable bluetooth.service
+sudo systemctl disable hciuart.service
+sudo systemctl disable cups.service
+sudo systemctl disable avahi-daemon.service
+sudo systemctl disable ModemManager.service
+sudo systemctl disable triggerhappy.service
+
+# If not using WiFi
+sudo systemctl disable wpa_supplicant.service
+```
+
+#### 5. Network Optimization
+
+```bash
+# Use ethernet over WiFi for stability
+# If using WiFi, disable power management
+sudo iwconfig wlan0 power off
+
+# Persist across reboots
+echo 'wireless-power off' | sudo tee -a /etc/network/interfaces
 ```
 
 ---
 
-## 🛠️ Troubleshooting
+## 🛠️ Troubleshooting & Diagnostics
 
-### Segments Not Rotating
+### Diagnosing Unexpected Shutdowns
+
+When Pi4 experiences unexpected shutdown or process death:
+
+```bash
+# 1. Check system logs for OOM killer
+sudo dmesg | grep -i "killed process"
+sudo journalctl -k | grep -i "oom"
+
+# 2. Check service status and exit codes
+sudo systemctl status daedalus
+journalctl -u daedalus --since "1 hour ago"
+
+# 3. Check power issues (undervoltage)
+sudo dmesg | grep -i "voltage"
+vcgencmd get_throttled  # 0x0 = no issues
+
+# 4. Check temperature (thermal throttling)
+vcgencmd measure_temp
+
+# 5. Check disk space
+df -h
+
+# 6. Check memory usage history (if sysstat installed)
+sar -r 1 10  # Memory stats every 1 sec for 10 samples
+
+# 7. Check last boot reason
+last reboot
+journalctl --list-boots
+```
+
+### Common Issues and Fixes
+
+#### Process Killed by OOM
+
+**Symptom**: Process dies after days/weeks, `dmesg` shows "Killed process"
+
+**Fix**:
+```bash
+# Increase swap
+sudo dphys-swapfile swapoff
+sudo sed -i 's/CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+
+# Lower memory thresholds in supervisor
+# Edit scripts/daedalus_supervisor.py:
+# memory_warning_mb = 2500
+# memory_critical_mb = 3000
+```
+
+#### Undervoltage Detected
+
+**Symptom**: `vcgencmd get_throttled` shows non-zero, random crashes
+
+**Fix**:
+- Use official Raspberry Pi power supply (5V 3A)
+- Use short, thick USB-C cable
+- Avoid USB hubs drawing power
+
+#### SD Card Corruption
+
+**Symptom**: Read-only filesystem errors, service won't start
+
+**Fix**:
+```bash
+# Check filesystem
+sudo fsck -y /dev/mmcblk0p2
+
+# Consider using USB SSD instead of SD card
+# Much more reliable for 24/7 write operations
+```
+
+#### Network Reconnection Issues
+
+**Symptom**: WebSocket connections don't recover after network blip
+
+**Fix**:
+```bash
+# Check if supervisor is restarting collectors
+journalctl -u daedalus | grep -i "reconnect"
+
+# Ensure auto_reconnect is enabled in config.yaml:
+# ingestion:
+#   auto_reconnect: true
+#   max_reconnect_attempts: -1  # -1 = infinite
+#   reconnect_delay: 5.0
+```
+
+### Health Check Commands
+
+```bash
+# Quick health overview
+python scripts/daedalus_supervisor.py --status
+
+# Memory usage by process
+ps aux --sort=-%mem | head -20
+
+# Check open files (should be < 1024)
+ls /proc/$(pgrep -f run_ingestion)/fd | wc -l
+
+# Check network connections
+ss -tuln | grep ESTABLISHED
+
+# Disk I/O
+iostat -x 1 5
+
+# CPU usage
+top -bn1 | head -20
+```
+
+### Segment Not Rotating
 
 **Symptom**: Active segment growing beyond limit
 
 **Solutions**:
 - Lower `segment_max_mb` in config
-- Check if ingestion is receiving data
+- Check if ingestion is receiving data: `tail -f logs/ingestion.log`
 - Ensure `enable_fsync: true` in config
-
-### ETL Not Finding Segments
-
-**Symptom**: ETL reports "No segments found"
-
-**Solutions**:
-- Verify paths in config point to correct `ready/` directory
-- Check if segments are still in `active/` (rotation not triggered)
-- Wait for rotation or stop ingestion to flush final segment
 
 ### Queue Full Warnings
 
@@ -811,20 +1114,11 @@ WantedBy=multi-user.target
 **Solutions**:
 - Increase `queue_maxsize` (e.g., 50000)
 - Decrease `flush_interval_seconds` (e.g., 2.0)
-- Check disk I/O performance
-
-### Connection Drops
-
-**Symptom**: `[CcxtCollector] Error in watchOrderBook`
-
-**Solutions**:
-- Verify API credentials
-- Check network connectivity
-- Increase `reconnect_delay` if hitting rate limits
+- Check disk I/O performance (use SSD over SD card)
 
 ---
 
-## � Documentation
+## 📚 Documentation
 
 ### For New Developers / Agent Sessions
 
@@ -838,6 +1132,19 @@ WantedBy=multi-user.target
 - Architecture, feature engineering, configuration flow
 - Recent enhancements, debugging guide, success criteria
 
+### Ingestion Pipeline (NEW)
+
+**Ingestion Engine**: [`docs/INGESTION_ENGINE.md`](docs/INGESTION_ENGINE.md)
+- Complete architecture of the ingestion pipeline
+- Performance optimizations (ThreadPoolExecutor, queue drain, etc.)
+- Memory management and configuration reference
+- Monitoring and troubleshooting guide
+
+**Pi4 Deployment**: [`docs/PI4_DEPLOYMENT.md`](docs/PI4_DEPLOYMENT.md)
+- Complete Raspberry Pi 4 deployment guide
+- Memory optimization, swap configuration
+- systemd service setup
+
 ### Feature Engineering
 
 **Configuration Guide**: [`docs/PROCESSOR_OPTIONS.md`](docs/PROCESSOR_OPTIONS.md)
@@ -848,7 +1155,17 @@ WantedBy=multi-user.target
 **Research Prompt**: [`docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md`](docs/RESEARCH_PROMPT_ORDERBOOK_QUANT.md)
 - Deep research prompt for optimal configurations
 - Questions about horizons, bar durations, new features
-- Awaiting research results for implementation
+
+### ETL Framework
+
+**Core Framework**: [`docs/ETL_CORE_FRAMEWORK.md`](docs/ETL_CORE_FRAMEWORK.md)
+- Transform architecture and base classes
+- FilterSpec for partition pruning
+- State management and checkpointing
+
+**CCXT ETL**: [`docs/CCXT_ETL_ARCHITECTURE.md`](docs/CCXT_ETL_ARCHITECTURE.md)
+- CCXT-specific pipeline design
+- Multi-channel routing
 
 ### Storage & Operations
 
@@ -860,10 +1177,6 @@ WantedBy=multi-user.target
 - Local ingestion + S3 output patterns
 - Sync strategies, compaction workflows
 
-**CCXT ETL**: [`docs/CCXT_ETL_ARCHITECTURE.md`](docs/CCXT_ETL_ARCHITECTURE.md)
-- CCXT-specific pipeline design
-- Multi-channel routing
-
 **Parquet Operations**: [`docs/PARQUET_OPERATIONS.md`](docs/PARQUET_OPERATIONS.md)
 - Best practices for Parquet files
 - Compression, partitioning, schema evolution
@@ -872,11 +1185,12 @@ WantedBy=multi-user.target
 - Segment naming conventions
 - Timestamp format reference
 
-### Trading Strategy
+### Quick Reference
 
-**US Crypto Strategy**: [`docs/US_CRYPTO_STRATEGY.md`](docs/US_CRYPTO_STRATEGY.md)
-- Regulatory considerations for US-based trading
-- Exchange selection, liquidity analysis
+**Documentation Index**: [`docs/INDEX.md`](docs/INDEX.md)
+- Complete index of all documentation
+- Topic-based navigation
+- Critical code locations
 
 ---
 
@@ -917,30 +1231,35 @@ ruff check .
 ### Adding New Features
 
 1. **Static features** (from single snapshot):
-   - Edit `etl/features/snapshot.py` → `extract_orderbook_features()`
-   - Add feature calculation
+   - Edit `etl/features/orderbook.py`
+   - Add vectorized feature calculation
    - Return in feature dict
 
 2. **Dynamic features** (requires state):
-   - Edit `etl/features/state.py` → `SymbolState.process_snapshot()`
-   - Access previous state via `self.prev_*` variables
-   - Compute delta-based features
+   - Edit `etl/features/stateful.py`
+   - Access previous state via class attributes
+   - Compute delta-based features (OFI, MLOFI, etc.)
 
 3. **Rolling statistics**:
-   - Add tracker in `SymbolState.__init__()`:
+   - Add tracker in feature class `__init__()`:
      ```python
      self.my_new_stat = RollingSum(horizon) for horizon in config.horizons
      ```
-   - Update in `process_snapshot()`:
+   - Update in processing method:
      ```python
      self.my_new_stat.update(value, timestamp)
      features[f'my_stat_{h}s'] = self.my_new_stat.sum
      ```
 
 4. **Configuration parameters**:
-   - Add to `StateConfig` dataclass in `etl/features/state.py`
+   - Add to config dataclass in `etl/core/config.py`
    - Document in `docs/PROCESSOR_OPTIONS.md`
-   - Update `config/config.yaml` example
+   - Update `config/config.examples.yaml`
+
+5. **New transforms**:
+   - Create new file in `etl/transforms/`
+   - Inherit from `BaseTransform`
+   - Register with `@register_transform` decorator
 
 ---
 
@@ -959,5 +1278,9 @@ The name represents the core mission: like Daedalus, the master craftsman of Gre
 **Ready to navigate the data labyrinth?** 🏛️
 
 ```bash
-python scripts/run_ingestion.py --source ccxt
+# Production (Pi4)
+python scripts/daedalus_supervisor.py --sources ccxt
+
+# Development (direct)
+python scripts/run_ingestion.py --sources ccxt
 ```

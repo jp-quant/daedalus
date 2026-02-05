@@ -81,8 +81,8 @@ class SupervisorConfig:
     
     # Health monitoring
     health_check_interval: int = 60  # seconds
-    memory_warning_mb: int = 3000  # Warn at 3.0GB
-    memory_critical_mb: int = 3500  # Restart at 3.5GB
+    memory_warning_mb: int = 2000  # Warn at 2GB (Pi4 has 3.8GB total)
+    memory_critical_mb: int = 2700  # Restart at 2.7GB (leaves room for OS + swap)
     max_restart_attempts: int = 5  # Max restarts in restart_window
     restart_window: int = 3600  # 1 hour window for restart counting
     restart_cooldown: int = 30  # seconds between restarts
@@ -616,8 +616,8 @@ def main():
     parser.add_argument(
         "--memory-limit-mb",
         type=int,
-        default=3600,
-        help="Memory limit in MB before forced restart (default: 3600)"
+        default=2000,
+        help="Memory limit in MB before forced restart (default: 2000)"
     )
     parser.add_argument(
         "--dry-run",

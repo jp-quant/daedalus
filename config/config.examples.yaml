@@ -238,12 +238,12 @@ ccxt:
 ingestion:
   batch_size: 100                  # Records per batch write
   flush_interval_seconds: 5.0      # Force flush every N seconds
-  queue_maxsize: 10000             # Max records in memory queue
+  queue_maxsize: 5000              # Max records in memory queue (reduced for Pi4 memory)
   enable_fsync: true               # Ensure data persisted to disk/S3
   auto_reconnect: true             # Reconnect on disconnection
   max_reconnect_attempts: 100000   # Max reconnect attempts
   reconnect_delay: 5.0             # Seconds between reconnect attempts
-  segment_max_mb: 100              # Rotate segment after N MB
+  segment_max_mb: 50               # Rotate segment after N MB (reduced for Pi4)
   
   # Parquet raw format options (when raw_format: "parquet")
   raw_format: "parquet"                       # "ndjson" or "parquet"

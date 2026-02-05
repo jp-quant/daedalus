@@ -21,7 +21,9 @@ Performance Considerations:
 """
 import asyncio
 import logging
+import gc
 import os
+import time
 from typing import List, Optional, Dict, Any
 
 import ccxt.pro as ccxtpro
@@ -41,6 +43,12 @@ DEFAULT_MAX_CONCURRENT_SUBSCRIPTIONS = None
 
 # CPU cores available (used for thread pool sizing)
 CPU_COUNT = os.cpu_count() or 4
+
+# How often to clear CCXT internal caches (seconds)
+# CCXT Pro maintains internal ArrayCache objects for trades, tickers, etc.
+# Even with tradesLimit=1, the internal orderbook objects accumulate
+# Python dict/list overhead. Periodic clearing helps on memory-constrained devices.
+CCXT_CACHE_CLEAR_INTERVAL = 300  # 5 minutes
 
 
 class CcxtCollector(BaseCollector):
@@ -129,12 +137,23 @@ class CcxtCollector(BaseCollector):
         # enableRateLimit: True is recommended by CCXT to handle the initial REST handshake 
         # and internal throttling to avoid 429s. It generally does not affect WebSocket 
         # throughput once connected, but ensures connection stability.
+        #
+        # MEMORY OPTIMIZATION: Set aggressive cache limits.
+        # CCXT Pro maintains internal ArrayCache per symbol for trades, tickers, etc.
+        # Without limits, these caches grow unbounded and leak hundreds of MB over hours.
+        # We write everything to Parquet immediately, so we don't need CCXT's caches.
+        exchange_options = dict(self.options)  # Copy to avoid mutating original
+        exchange_options.setdefault('tradesLimit', 1)       # Don't cache trades (we persist to Parquet)
+        exchange_options.setdefault('OHLCVLimit', 1)        # Don't cache OHLCV
+        exchange_options.setdefault('ordersLimit', 1)        # Don't cache orders
+        exchange_options.setdefault('tickersLimit', 1)       # Don't cache tickers (available in ccxt >= 4.x)
+        
         config = {
             'apiKey': self.api_key,
             'secret': self.api_secret,
             'password': self.password,
             'enableRateLimit': self.options.get('enableRateLimit', True),
-            'options': self.options
+            'options': exchange_options,
         }
         self.exchange = exchange_class(config)
         logger.info(f"Initialized CCXT exchange {self.exchange_id}")
@@ -181,6 +200,9 @@ class CcxtCollector(BaseCollector):
             logger.warning(f"No valid channels configured for {self.exchange_id}")
             return
 
+        # Add periodic cache-clearing task to prevent CCXT internal memory growth
+        loops.append(self._cache_clearing_loop())
+
         # Run all loops concurrently
         try:
             # Stagger the start of each loop to avoid rate limits
@@ -198,6 +220,61 @@ class CcxtCollector(BaseCollector):
                 await self.exchange.close()
                 self.exchange = None
             logger.info(f"Closed CCXT exchange {self.exchange_id}")
+
+    async def _cache_clearing_loop(self):
+        """
+        Periodically clear CCXT Pro internal caches to prevent memory growth.
+        
+        CCXT Pro maintains internal ArrayCache objects for trades, tickers, OHLCV, etc.
+        Even with tradesLimit=1, the Python dict/list overhead from the exchange's
+        internal state (orderbooks dict, tickers dict, trades dict) accumulates
+        over hours of operation. This is especially critical on memory-constrained
+        devices like Raspberry Pi 4.
+        
+        This task runs alongside the data collection loops and periodically:
+        1. Clears the internal trades cache (we already wrote data to Parquet)
+        2. Clears the internal tickers cache
+        3. Forces Python garbage collection
+        """
+        logger.info(f"[{self.exchange_id}] Cache clearing task started (interval={CCXT_CACHE_CLEAR_INTERVAL}s)")
+        
+        while not self._shutdown.is_set():
+            try:
+                await asyncio.sleep(CCXT_CACHE_CLEAR_INTERVAL)
+                
+                if self.exchange is None:
+                    continue
+                
+                cleared_items = 0
+                
+                # Clear trades cache - we've already written these to Parquet
+                if hasattr(self.exchange, 'trades') and self.exchange.trades:
+                    cleared_items += len(self.exchange.trades)
+                    self.exchange.trades.clear()
+                
+                # Clear tickers cache
+                if hasattr(self.exchange, 'tickers') and self.exchange.tickers:
+                    cleared_items += len(self.exchange.tickers)
+                    self.exchange.tickers.clear()
+                
+                # Clear OHLCV cache
+                if hasattr(self.exchange, 'ohlcvs') and self.exchange.ohlcvs:
+                    cleared_items += len(self.exchange.ohlcvs)
+                    self.exchange.ohlcvs.clear()
+                
+                # Force garbage collection to reclaim freed memory
+                collected = gc.collect()
+                
+                logger.info(
+                    f"[{self.exchange_id}] Cache cleared: {cleared_items} entries removed, "
+                    f"gc collected {collected} objects"
+                )
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[{self.exchange_id}] Error in cache clearing: {e}")
+                await asyncio.sleep(60)  # Back off on error
 
     async def _symbol_loop(self, method: str, symbol: str, start_delay: float = 0.0):
         """
@@ -244,6 +321,13 @@ class CcxtCollector(BaseCollector):
                 capture_ts = utc_now()
 
                 # Standardize and write
+                # MEMORY OPTIMIZATION: Strip 'info' dict from data before queuing.
+                # The 'info' field contains the full raw exchange response which can be
+                # very large. We serialize it to JSON in the writer anyway, but holding
+                # the full Python dict in the queue wastes memory. Strip it here.
+                if isinstance(data_to_store, dict) and 'info' in data_to_store:
+                    data_to_store = {k: v for k, v in data_to_store.items() if k != 'info'}
+                
                 msg = {
                     "type": channel_type,
                     "exchange": self.exchange_id,
@@ -282,11 +366,16 @@ class CcxtCollector(BaseCollector):
                 # Capture timestamp immediately after receipt
                 capture_ts = utc_now()
                 
+                # Strip 'info' to reduce memory pressure
+                data_to_store = response
+                if isinstance(response, dict) and 'info' in response:
+                    data_to_store = {k: v for k, v in response.items() if k != 'info'}
+                
                 msg = {
                     "type": channel_type,
                     "exchange": self.exchange_id,
                     "method": method,
-                    "data": response,
+                    "data": data_to_store,
                     "collected_at": self.exchange.milliseconds(),
                     "capture_ts": capture_ts.isoformat()
                 }
@@ -341,24 +430,27 @@ class CcxtCollector(BaseCollector):
                     # response is Dict[symbol, Ticker] or List[Ticker]
                     if isinstance(response, dict):
                         for sym, ticker in response.items():
+                            # Strip 'info' to reduce memory pressure
+                            ticker_data = {k: v for k, v in ticker.items() if k != 'info'} if isinstance(ticker, dict) else ticker
                             msgs.append({
                                 "type": channel_type,
                                 "exchange": self.exchange_id,
                                 "symbol": sym,
                                 "method": method,
-                                "data": ticker,
+                                "data": ticker_data,
                                 "collected_at": self.exchange.milliseconds(),
                                 "capture_ts": capture_ts.isoformat()
                             })
                     elif isinstance(response, list):
                          for ticker in response:
                             sym = ticker.get('symbol')
+                            ticker_data = {k: v for k, v in ticker.items() if k != 'info'} if isinstance(ticker, dict) else ticker
                             msgs.append({
                                 "type": channel_type,
                                 "exchange": self.exchange_id,
                                 "symbol": sym,
                                 "method": method,
-                                "data": ticker,
+                                "data": ticker_data,
                                 "collected_at": self.exchange.milliseconds(),
                                 "capture_ts": capture_ts.isoformat()
                             })
@@ -370,9 +462,11 @@ class CcxtCollector(BaseCollector):
                         by_symbol = {}
                         for trade in response:
                             s = trade.get('symbol')
+                            # Strip 'info' from each trade to reduce memory
+                            trade_clean = {k: v for k, v in trade.items() if k != 'info'} if isinstance(trade, dict) else trade
                             if s not in by_symbol:
                                 by_symbol[s] = []
-                            by_symbol[s].append(trade)
+                            by_symbol[s].append(trade_clean)
                         
                         for s, trades in by_symbol.items():
                             msgs.append({
@@ -396,6 +490,10 @@ class CcxtCollector(BaseCollector):
                                 data_to_store['bids'] = response['bids'][:self.max_orderbook_depth]
                             if 'asks' in response:
                                 data_to_store['asks'] = response['asks'][:self.max_orderbook_depth]
+                    
+                    # Strip 'info' to reduce memory
+                    if isinstance(data_to_store, dict) and 'info' in data_to_store:
+                        data_to_store = {k: v for k, v in data_to_store.items() if k != 'info'}
                     
                     msgs.append({
                         "type": channel_type,

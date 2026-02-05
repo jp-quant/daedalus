@@ -1,6 +1,6 @@
 # Documentation Index & Quick Reference
 
-**Last Updated**: December 15, 2025
+**Last Updated**: February 4, 2026
 
 This document provides a map of all documentation and quick access to key information.
 

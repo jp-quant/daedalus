@@ -1,6 +1,6 @@
 data/
-research/
 .pids/
+research/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

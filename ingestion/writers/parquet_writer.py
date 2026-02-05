@@ -99,12 +99,14 @@ _CLEANUP_DONE = False
 MAX_OPEN_WRITERS = 350
 
 # Thread pool for I/O-bound operations (disk writes, file moves)
-# Sized based on CPU cores but capped for I/O workloads
-# I/O-bound tasks benefit from more threads than CPU cores
-IO_THREAD_POOL_SIZE = min(32, (os.cpu_count() or 4) * 4)
+# On resource-constrained devices (Pi4), fewer threads reduce memory overhead.
+# Each thread stack is ~8MB on Linux, so 16 threads = 128MB of stack alone.
+# For sequential disk I/O, diminishing returns past a few threads.
+IO_THREAD_POOL_SIZE = min(4, (os.cpu_count() or 2) + 1)
 
 # Memory management: cleanup stale entries and force GC periodically (seconds)
-MEMORY_CLEANUP_INTERVAL = 300  # 5 minutes
+# On memory-constrained devices, clean up more aggressively
+MEMORY_CLEANUP_INTERVAL = 60  # 1 minute (was 5 minutes)
 
 # Maximum age for hour_counters entries before cleanup (seconds)
 # Entries older than 2 hours are definitely stale
@@ -726,8 +728,15 @@ class StreamingParquetWriter:
         channel = pv["channel"]
         
         try:
+            records_length = len(records)
             # Convert records to PyArrow table (includes partition column values)
             table = self._records_to_table(channel, records, pv)
+            
+            # MEMORY OPTIMIZATION: Release Python records immediately after conversion.
+            # The data now lives in the PyArrow table (off-heap Arrow memory).
+            # This is critical on Pi4 where every MB counts.
+            del records
+            
             if table is None or table.num_rows == 0:
                 return
             
@@ -746,7 +755,7 @@ class StreamingParquetWriter:
             bytes_written = table.nbytes
             self._partition_sizes[partition_key] = self._partition_sizes.get(partition_key, 0) + bytes_written
             self.stats["bytes_written"] += bytes_written
-            self.stats["messages_written"] += len(records)
+            self.stats["messages_written"] += records_length
             self.stats["flushes"] += 1
             
             # Check for rotation
@@ -834,7 +843,7 @@ class StreamingParquetWriter:
                 "change": data.get("change"),
                 "percentage": data.get("percentage"),
                 "timestamp": data.get("timestamp", 0),
-                "info_json": json.dumps(data.get("info", {}), separators=(",", ":")),
+                "info_json": "{}",  # Info stripped at collector level for memory efficiency
             })
         return pa.Table.from_pylist(rows, schema=CHANNEL_SCHEMAS["ticker"])
     
@@ -877,7 +886,7 @@ class StreamingParquetWriter:
                     "price": trade.get("price"),
                     "amount": trade.get("amount"),
                     "cost": trade.get("cost"),
-                    "info_json": json.dumps(trade.get("info", {}), separators=(",", ":")),
+                    "info_json": "{}",  # Info stripped at collector level for memory efficiency
                 })
         return pa.Table.from_pylist(rows, schema=CHANNEL_SCHEMAS["trades"])
     
