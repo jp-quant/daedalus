@@ -1,0 +1,192 @@
+{
+  "timestamp": "2026-02-02T11:43:16.390648",
+  "data_summary": {
+    "symbol": "BTC-USD",
+    "exchange": "coinbaseadvanced",
+    "date": "2026-01-26",
+    "n_records": 613480,
+    "n_features": 224,
+    "median_delta_seconds": 0.054,
+    "price_range": [
+      86411.705,
+      88766.505
+    ],
+    "price_change_pct": 2.72509378214445
+  },
+  "event_driven_data": {
+    "is_irregular_timestamp": true,
+    "note": "This is event-driven data, NOT fixed-frequency time series",
+    "time_features_added": [
+      "delta_seconds",
+      "hour_of_day",
+      "hour_sin",
+      "hour_cos",
+      "is_gap_1s",
+      "is_gap_5s"
+    ]
+  },
+  "target_analysis": {
+    "1tick": {
+      "pct_up": 7.103258628249703
+    },
+    "5tick": {
+      "pct_up": 15.14976160397734
+    },
+    "10tick": {
+      "pct_up": 20.77086084079091
+    },
+    "30tick": {
+      "pct_up": 32.60624337761839
+    },
+    "60tick": {
+      "pct_up": 40.03994000847707
+    }
+  },
+  "model_results": {
+    "target": "dir_30tick",
+    "best_model": "LightGBM_BAG_L1_FULL",
+    "test_roc_auc": 0.629,
+    "test_accuracy": 0.619,
+    "train_samples": 485113,
+    "test_samples": 121279,
+    "model_path": "research/models/autogluon_BTC_USD_dir_30tick"
+  },
+  "top_features_by_correlation": [
+    {
+      "name": "smart_depth_imbalance",
+      "correlation": 0.08713490399222963
+    },
+    {
+      "name": "total_imbalance",
+      "correlation": 0.08648706750495738
+    },
+    {
+      "name": "book_pressure",
+      "correlation": 0.08648706750495738
+    },
+    {
+      "name": "imbalance_L10",
+      "correlation": 0.07344978707419232
+    },
+    {
+      "name": "mean_return_60s",
+      "correlation": -0.06353058072269821
+    },
+    {
+      "name": "imb_band_50_100bps",
+      "correlation": 0.0609875821108721
+    },
+    {
+      "name": "imbalance_L5",
+      "correlation": 0.05669739382660866
+    },
+    {
+      "name": "imb_band_5_10bps",
+      "correlation": 0.05487282909596974
+    },
+    {
+      "name": "imb_band_25_50bps",
+      "correlation": 0.04518136904091591
+    },
+    {
+      "name": "ask_concentration",
+      "correlation": -0.045034567671512024
+    },
+    {
+      "name": "imbalance_L3",
+      "correlation": 0.04395348440452347
+    },
+    {
+      "name": "imb_band_10_25bps",
+      "correlation": 0.04163505124256006
+    },
+    {
+      "name": "bid_concentration",
+      "correlation": 0.039624556584561564
+    },
+    {
+      "name": "mean_return_15s",
+      "correlation": -0.03313220535404584
+    },
+    {
+      "name": "mlofi_sum_5s",
+      "correlation": 0.032565838999724595
+    }
+  ],
+  "top_features_by_importance": [
+    {
+      "name": "imbalance_L1",
+      "importance": 0.028428068623814907
+    },
+    {
+      "name": "relative_spread",
+      "importance": 0.019441943816041852
+    },
+    {
+      "name": "imbalance_L5",
+      "importance": 0.006321429478769303
+    },
+    {
+      "name": "total_imbalance",
+      "importance": 0.006134372065193849
+    },
+    {
+      "name": "bid_concentration",
+      "importance": 0.005268654790160121
+    },
+    {
+      "name": "imbalance_L10",
+      "importance": 0.005173901406983661
+    },
+    {
+      "name": "imb_band_5_10bps",
+      "importance": 0.003227722786247278
+    },
+    {
+      "name": "mlofi",
+      "importance": 0.003166595052404819
+    },
+    {
+      "name": "ofi",
+      "importance": 0.003042140678358707
+    },
+    {
+      "name": "hour_cos",
+      "importance": 0.0029933407987127623
+    }
+  ],
+  "multicollinear_pairs": [
+    {
+      "feat1": "smart_depth_imbalance",
+      "feat2": "total_imbalance",
+      "correlation": 0.9999799250094599
+    },
+    {
+      "feat1": "smart_depth_imbalance",
+      "feat2": "book_pressure",
+      "correlation": 0.9999799250094599
+    },
+    {
+      "feat1": "total_imbalance",
+      "feat2": "book_pressure",
+      "correlation": 1.0
+    },
+    {
+      "feat1": "imbalance_L5",
+      "feat2": "imbalance_L3",
+      "correlation": 0.8085905896116022
+    }
+  ],
+  "recommendations": {
+    "best_horizon": "30tick (32.6% up, good balance)",
+    "key_features": [
+      "imbalance_L1",
+      "relative_spread",
+      "imbalance_L5",
+      "total_imbalance"
+    ],
+    "model_type": "LightGBM with bagging",
+    "include_time_features": true,
+    "validation_strategy": "Time-based split (80/20 chronological)"
+  }
+}

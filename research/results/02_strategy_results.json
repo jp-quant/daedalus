@@ -1,0 +1,82 @@
+{
+  "research_date": "2025-01-27",
+  "notebook": "02_optimal_trade_classifier.ipynb",
+  "data_range": {
+    "train": ["2026-01-15", "2026-01-21"],
+    "test": ["2026-01-22", "2026-01-26"]
+  },
+  "exchange": "coinbaseadvanced",
+  "symbol": "BTC-USD",
+  
+  "strategies_tested": [
+    {
+      "name": "Optimal Trade Detection (HFT)",
+      "profitable": false,
+      "issue": "Extreme class imbalance (0.002%), model overfits"
+    },
+    {
+      "name": "Regression (Forward Returns)",
+      "profitable": false,
+      "issue": "R²=0.016, no predictive power"
+    },
+    {
+      "name": "Mean Reversion (Price Z-Score)",
+      "profitable": false,
+      "issue": "Loses money even at zero fees"
+    },
+    {
+      "name": "Hourly Direction Prediction",
+      "profitable": false,
+      "issue": "53% accuracy, edge destroyed by fees"
+    },
+    {
+      "name": "Orderbook Imbalance",
+      "profitable": true,
+      "condition": "Fee < 0.27 bps"
+    }
+  ],
+  
+  "best_strategy": {
+    "name": "Orderbook Imbalance (Z=1.5)",
+    "signal": "total_imbalance",
+    "correlation_with_10s_return": 0.0813,
+    "correlation_with_30s_return": 0.0845,
+    "parameters": {
+      "entry_z_threshold": 1.5,
+      "exit_z_threshold": 0.5,
+      "max_hold_seconds": 300,
+      "lookback_seconds": 600
+    },
+    "results_by_fee": {
+      "0.00_bps": {"return_pct": 84.55, "win_rate": 0.539, "trades": 10513},
+      "0.10_bps": {"return_pct": 49.55, "win_rate": 0.467, "trades": 10513},
+      "0.20_bps": {"return_pct": 21.20, "win_rate": 0.410, "trades": 10513},
+      "0.25_bps": {"return_pct": 9.10, "win_rate": 0.379, "trades": 10513},
+      "0.30_bps": {"return_pct": -1.78, "win_rate": 0.346, "trades": 10513},
+      "1.00_bps": {"return_pct": -77.46, "win_rate": 0.120, "trades": 10513}
+    },
+    "breakeven_fee_bps": 0.27
+  },
+  
+  "key_features": [
+    {"name": "total_imbalance", "correlation_10s": 0.0813},
+    {"name": "smart_depth_imbalance", "correlation_10s": 0.0818},
+    {"name": "imbalance_L5", "correlation_10s": 0.0575},
+    {"name": "imbalance_L3", "correlation_10s": 0.0412},
+    {"name": "imbalance_L1", "correlation_10s": 0.0230}
+  ],
+  
+  "conclusions": [
+    "Orderbook imbalance HAS predictive power (8% correlation)",
+    "Breakeven fee is ~0.27 bps (extremely tight)",
+    "Retail traders CANNOT profit from this signal due to fees",
+    "Market makers with rebates could potentially profit",
+    "Signal decays within 30-60 seconds"
+  ],
+  
+  "recommendations": {
+    "retail": "Use imbalance as confirmation signal only, not primary entry",
+    "institutional": "Tradeable with co-location and maker rebates",
+    "research": "Combine with volatility regime, test on other pairs"
+  }
+}
