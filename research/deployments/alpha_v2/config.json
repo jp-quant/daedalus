@@ -1,0 +1,175 @@
+{
+  "strategy": {
+    "primary": "ML_direction",
+    "model": "XGBoost",
+    "threshold": {
+      "long": 0.6,
+      "short": 0.4
+    },
+    "hold_period": 30,
+    "description": "XGBoost probability-based direction strategy with 0.6/0.4 threshold"
+  },
+  "signal_fallback": {
+    "type": "ImbalanceSignal",
+    "column": "total_imbalance",
+    "lookback": 600,
+    "entry_z": 1.5,
+    "exit_z": 0.5,
+    "max_hold": 30
+  },
+  "composite_signal": {
+    "features": [
+      "imbalance_L3",
+      "imbalance_L5",
+      "imbalance_L1",
+      "imb_band_0_5bps",
+      "imbalance_L10",
+      "cog_vs_mid",
+      "ofi_sum_5s",
+      "smart_depth_imbalance"
+    ],
+    "weights": [
+      0.10155332380938274,
+      0.09831485038980005,
+      0.09747994434315899,
+      0.09747994434315899,
+      0.07712201578734447,
+      0.04546973551021673,
+      0.04195377337717777,
+      0.042899490955753815
+    ],
+    "correlation_with_30s_fwd": 0.1137
+  },
+  "ml_config": {
+    "features": [
+      "micro_minus_mid",
+      "spread",
+      "relative_spread",
+      "total_imbalance",
+      "imbalance_L1",
+      "imbalance_L3",
+      "imbalance_L5",
+      "imbalance_L10",
+      "smart_depth_imbalance",
+      "book_pressure",
+      "ofi",
+      "mlofi",
+      "ofi_sum_5s",
+      "ofi_sum_15s",
+      "ofi_sum_60s",
+      "mlofi_sum_5s",
+      "mlofi_sum_15s",
+      "mlofi_sum_60s",
+      "order_flow_toxicity",
+      "vpin",
+      "mid_velocity",
+      "mid_accel",
+      "log_return",
+      "mean_return_5s",
+      "mean_return_15s",
+      "mean_return_60s",
+      "rv_5s",
+      "rv_15s",
+      "rv_60s",
+      "rv_300s",
+      "total_bid_depth",
+      "total_ask_depth",
+      "smart_bid_depth",
+      "smart_ask_depth",
+      "bid_depth_decay_5",
+      "ask_depth_decay_5",
+      "bid_concentration",
+      "ask_concentration",
+      "bid_slope",
+      "ask_slope",
+      "center_of_gravity",
+      "cog_vs_mid",
+      "imb_band_0_5bps",
+      "imb_band_5_10bps",
+      "imb_band_10_25bps",
+      "spread_percentile",
+      "mean_spread_5s",
+      "mean_spread_15s",
+      "tfi_5s",
+      "tfi_15s",
+      "tfi_60s",
+      "kyle_lambda",
+      "amihud_like",
+      "lambda_like"
+    ],
+    "n_features": 54,
+    "xgb_params": {
+      "objective": "binary:logistic",
+      "eval_metric": "auc",
+      "max_depth": 4,
+      "learning_rate": 0.05,
+      "subsample": 0.8,
+      "colsample_bytree": 0.6,
+      "min_child_weight": 100,
+      "reg_alpha": 0.1,
+      "reg_lambda": 1.0,
+      "n_estimators": 200,
+      "verbosity": 0,
+      "n_jobs": -1,
+      "random_state": 42
+    },
+    "scaler": "StandardScaler",
+    "train_window_days": 10,
+    "retrain_frequency": "daily"
+  },
+  "performance": {
+    "oos_days": 12,
+    "oos_total_return_0fee_pct": 462.2,
+    "oos_total_return_01bps_pct": 161.4,
+    "oos_daily_win_rate_01bps": 1.0,
+    "oos_mean_auc": 0.748,
+    "oos_mean_daily_return_01bps_pct": 8.5,
+    "oos_trade_win_rate": 0.549,
+    "oos_trades_per_day": 3200
+  },
+  "multi_asset_alpha": {
+    "SOL-USD": {
+      "win_rate": 0.72,
+      "ret_01bps_pct": 383.3,
+      "days": 3
+    },
+    "XRP-USD": {
+      "win_rate": 0.77,
+      "ret_01bps_pct": 135.5,
+      "days": 3
+    },
+    "DOGE-USD": {
+      "win_rate": 0.65,
+      "ret_01bps_pct": 68.0,
+      "days": 3
+    },
+    "LINK-USD": {
+      "win_rate": 0.64,
+      "ret_01bps_pct": 80.5,
+      "days": 3
+    }
+  },
+  "fee_assumptions": {
+    "target_fee_bps": 0.1,
+    "signal_only_breakeven_bps": 0.15,
+    "ml_profitable_below_bps": 0.3
+  },
+  "statistical_validation": {
+    "permutation_p_value": 0.0,
+    "holm_bonferroni_significant": "23/24",
+    "bootstrap_prob_positive_01bps": 1.0
+  },
+  "validated_assets": [
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD",
+    "XRP-USD",
+    "DOGE-USD",
+    "LINK-USD",
+    "ADA-USD",
+    "AVAX-USD"
+  ],
+  "training_period": "(2025, 12, 12)->(2026, 1, 14)",
+  "test_period": "(2026, 1, 15)->(2026, 1, 26)",
+  "notebook": "03_advanced_alpha_optimization"
+}

@@ -14,6 +14,7 @@
 |-------|--------|-------------|--------|----------------|
 | [Orderbook Feature Analysis](notebooks/01_orderbook_feature_analysis.ipynb) | ✅ Complete | 205 features extracted | N/A | Production |
 | [Microstructure Alpha Discovery](notebooks/02_microstructure_alpha_discovery.ipynb) | ✅ Complete | 8.2% correlation signal | 3.2* | Institutional |
+| [Advanced Alpha Optimization](notebooks/03_advanced_alpha_optimization.ipynb) | ✅ Complete | Multi-asset + ML + regime | TBD | Institutional |
 
 *\*At zero fees; economically viable only for market makers*
 
@@ -191,11 +192,19 @@ print(f"Return: {result.total_return_pct:+.2f}%, Sharpe: {result.sharpe:.1f}")
 
 ## 🚀 Future Research
 
-1. **Multi-Asset Extension**: Test on ETH, SOL, other liquid pairs
-2. **Regime Conditioning**: Separate models for high/low volatility
-3. **Order Flow Toxicity**: Integrate VPIN, Kyle's Lambda
-4. **Execution Optimization**: Optimal order placement using signals
-5. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation
+### Completed in Notebook 03
+- ✅ **Multi-Asset Extension**: Validated on ETH, SOL, XRP, DOGE, LINK, ADA, AVAX (22 assets available)
+- ✅ **Regime Conditioning**: Vol-regime detection + regime-conditional parameter optimization
+- ✅ **Order Flow Toxicity**: MI-ranked feature importance including VPIN, Kyle's Lambda, OFI
+- ✅ **ML Models**: XGBoost + LightGBM walk-forward, ensemble strategy
+- ✅ **Statistical Validation**: Bootstrap CI, permutation tests, Holm-Bonferroni correction
+
+### Remaining (Notebook 04+)
+1. **Live Paper Trading**: Simulation with realistic latency and execution
+2. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation (Coinbase vs Binance)
+3. **Execution Optimization**: Optimal order placement using signals, iceberg orders
+4. **Longer Holding Periods**: Lower-frequency variants for wider fee tolerance
+5. **VPIN Stand-Alone**: Order flow toxicity as independent alpha source
 
 ---
 

@@ -15,6 +15,7 @@
 |----------|-------------|-------------|
 | [01_orderbook_feature_analysis](../notebooks/01_orderbook_feature_analysis.ipynb) | Feature engineering and EDA | 205 features defined |
 | [02_microstructure_alpha_discovery](../notebooks/02_microstructure_alpha_discovery.ipynb) | Iterative strategy research & alpha discovery | Imbalance signal (ρ=0.082) |
+| [03_advanced_alpha_optimization](../notebooks/03_advanced_alpha_optimization.ipynb) | Multi-asset, regime, ML, statistical validation | Composite signal, ensemble strategy |
 
 ## Result Files
 
