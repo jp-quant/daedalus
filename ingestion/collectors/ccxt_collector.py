@@ -379,11 +379,15 @@ class CcxtCollector(BaseCollector):
             except Exception as e:
                 if self._shutdown.is_set():
                     break
-                # RequestTimeout from ping-pong failure — CCXT reconnects automatically
-                # on next watch*() call. Short delay to let reconnection settle.
+                # Classify the error for appropriate handling:
+                # - Timeouts: ping-pong failure, CCXT reconnects on next call
+                # - Connection closed (1006): server-side disconnect, also auto-reconnects
+                # - Other: genuine errors, log at ERROR and back off
                 error_name = type(e).__name__
-                if 'Timeout' in error_name or 'timeout' in str(e).lower():
-                    logger.debug(f"[{self.exchange_id}] {method} {symbol}: timeout, reconnecting...")
+                error_str = str(e).lower()
+                if ('Timeout' in error_name or 'timeout' in error_str
+                        or 'connection closed' in error_str or '1006' in str(e)):
+                    logger.debug(f"[{self.exchange_id}] {method} {symbol}: {error_name}, reconnecting...")
                     await asyncio.sleep(1.0)
                 else:
                     logger.error(f"Error in {self.exchange_id} {method} {symbol}: {e}")
@@ -430,8 +434,10 @@ class CcxtCollector(BaseCollector):
                 if self._shutdown.is_set():
                     break
                 error_name = type(e).__name__
-                if 'Timeout' in error_name or 'timeout' in str(e).lower():
-                    logger.debug(f"[{self.exchange_id}] {method}: timeout, reconnecting...")
+                error_str = str(e).lower()
+                if ('Timeout' in error_name or 'timeout' in error_str
+                        or 'connection closed' in error_str or '1006' in str(e)):
+                    logger.debug(f"[{self.exchange_id}] {method}: {error_name}, reconnecting...")
                     await asyncio.sleep(1.0)
                 else:
                     logger.error(f"Error in {self.exchange_id} {method}: {e}")
@@ -524,8 +530,10 @@ class CcxtCollector(BaseCollector):
                 if self._shutdown.is_set():
                     break
                 error_name = type(e).__name__
-                if 'Timeout' in error_name or 'timeout' in str(e).lower():
-                    logger.debug(f"[{self.exchange_id}] {bulk_method}: timeout, reconnecting...")
+                error_str = str(e).lower()
+                if ('Timeout' in error_name or 'timeout' in error_str
+                        or 'connection closed' in error_str or '1006' in str(e)):
+                    logger.debug(f"[{self.exchange_id}] {bulk_method}: {error_name}, reconnecting...")
                     await asyncio.sleep(1.0)
                 else:
                     logger.error(f"Error in {self.exchange_id} {bulk_method}: {e}")

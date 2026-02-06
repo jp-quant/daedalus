@@ -94,10 +94,12 @@ _CLEANUP_DONE = False
 # PROHIBITED_PATH_CHARS - imported from shared.partitioning
 
 # Maximum number of open Parquet writers to prevent "too many open files" error
-# On Pi4 with 3 exchanges × ~50 symbols × 3 channels = ~450 potential combos,
-# but not all write simultaneously. Keep this low to bound PyArrow buffer memory.
-# Each open ParquetWriter holds ~0.5-2MB of PyArrow column buffers.
-MAX_OPEN_WRITERS = 150
+# On Pi4 with 3 exchanges × ~50 symbols × 3 channels = ~300+ partition combos.
+# Setting this BELOW total combos causes constant evict/reopen thrashing that
+# creates hundreds of tiny 0.0MB parquet files per minute. Set it HIGH ENOUGH
+# to hold all active partitions. Memory savings come from CCXT cache limits,
+# info stripping, and idle eviction — not from artificially limiting writers.
+MAX_OPEN_WRITERS = 300
 
 # Thread pool for I/O-bound operations (disk writes, file moves)
 # On resource-constrained devices (Pi4), fewer threads reduce memory overhead.
@@ -1160,8 +1162,10 @@ class StreamingParquetWriter:
             self.stats["rotations"] += 1
             size_mb = self._partition_sizes.get(partition_key, 0) / 1024 / 1024
             pv = self._partition_key_to_values(partition_key)
-            logger.info(f"[StreamingParquetWriter] Rotated {pv['channel']}/{pv.get('exchange','')}/{pv.get('symbol','')}: "
-                       f"{segment_info['name']} ({size_mb:.1f} MB) -> ready/")
+            # Log tiny segments (from eviction) at DEBUG to reduce log noise
+            log_fn = logger.debug if size_mb < 0.01 else logger.info
+            log_fn(f"[StreamingParquetWriter] Rotated {pv['channel']}/{pv.get('exchange','')}/{pv.get('symbol','')}: "
+                   f"{segment_info['name']} ({size_mb:.1f} MB) -> ready/")
         
         except Exception as e:
             logger.error(f"[StreamingParquetWriter] Error rotating {partition_key}: {e}", exc_info=True)
