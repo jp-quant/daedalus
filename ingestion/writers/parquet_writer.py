@@ -94,9 +94,10 @@ _CLEANUP_DONE = False
 # PROHIBITED_PATH_CHARS - imported from shared.partitioning
 
 # Maximum number of open Parquet writers to prevent "too many open files" error
-# With 3 channels × 20 symbols × 2 exchanges = 120 partitions, this gives headroom
-# Each PyArrow ParquetWriter holds 1 file descriptor
-MAX_OPEN_WRITERS = 350
+# On Pi4 with 3 exchanges × ~50 symbols × 3 channels = ~450 potential combos,
+# but not all write simultaneously. Keep this low to bound PyArrow buffer memory.
+# Each open ParquetWriter holds ~0.5-2MB of PyArrow column buffers.
+MAX_OPEN_WRITERS = 150
 
 # Thread pool for I/O-bound operations (disk writes, file moves)
 # On resource-constrained devices (Pi4), fewer threads reduce memory overhead.
@@ -111,6 +112,11 @@ MEMORY_CLEANUP_INTERVAL = 60  # 1 minute (was 5 minutes)
 # Maximum age for hour_counters entries before cleanup (seconds)
 # Entries older than 2 hours are definitely stale
 HOUR_COUNTER_MAX_AGE_SECONDS = 7200
+
+# Maximum idle time for a writer before proactive eviction (seconds)
+# Writers that haven't received data in 5 minutes are closed during periodic cleanup.
+# This avoids waiting for MAX_OPEN_WRITERS to be hit, reducing steady-state memory.
+WRITER_IDLE_EVICTION_SECONDS = 300
 
 
 # =============================================================================
@@ -1323,15 +1329,28 @@ class StreamingParquetWriter:
         Periodic cleanup to prevent memory leaks during long-running operation.
         
         This method:
-        1. Removes stale entries from hour_counters (older than 2 hours)
-        2. Removes empty partition buffers
-        3. Forces garbage collection
+        1. Proactively evicts writers idle for > WRITER_IDLE_EVICTION_SECONDS
+        2. Removes stale entries from hour_counters (older than 2 hours)
+        3. Removes empty partition buffers
+        4. Forces garbage collection
         
         Called every MEMORY_CLEANUP_INTERVAL seconds from _writer_loop.
         """
         current_time = time.time()
         
-        # 1. Clean up stale hour_counters entries
+        # 1. Proactive idle writer eviction — close writers that haven't received
+        # data recently. This keeps steady-state memory bounded even when the
+        # total number of partition combos exceeds MAX_OPEN_WRITERS.
+        idle_writers = [
+            key for key, info in list(self._partition_segments.items())
+            if current_time - info.get("last_write", 0) > WRITER_IDLE_EVICTION_SECONDS
+        ]
+        for key in idle_writers:
+            self._rotate_segment(key)
+        if idle_writers:
+            logger.info(f"[StreamingParquetWriter] Evicted {len(idle_writers)} idle writers (>{WRITER_IDLE_EVICTION_SECONDS}s)")
+        
+        # 2. Clean up stale hour_counters entries
         stale_counters = []
         for key, (count, last_used) in list(self.hour_counters.items()):
             if current_time - last_used > HOUR_COUNTER_MAX_AGE_SECONDS:
@@ -1344,7 +1363,7 @@ class StreamingParquetWriter:
             self.stats["stale_counters_cleaned"] += len(stale_counters)
             logger.debug(f"[StreamingParquetWriter] Cleaned {len(stale_counters)} stale hour counters")
         
-        # 2. Clean up empty partition buffers (deques that are empty)
+        # 3. Clean up empty partition buffers (deques that are empty)
         empty_buffers = [
             key for key, buf in self._partition_buffers.items() 
             if len(buf) == 0 and key not in self._partition_segments
@@ -1357,7 +1376,7 @@ class StreamingParquetWriter:
             self.stats["stale_buffers_cleaned"] += len(empty_buffers)
             logger.debug(f"[StreamingParquetWriter] Cleaned {len(empty_buffers)} empty partition buffers")
         
-        # 3. Clean up partition sizes for non-existent segments
+        # 4. Clean up partition sizes for non-existent segments
         orphan_sizes = [
             key for key in self._partition_sizes.keys()
             if key not in self._partition_segments
@@ -1365,7 +1384,7 @@ class StreamingParquetWriter:
         for key in orphan_sizes:
             del self._partition_sizes[key]
         
-        # 4. Force garbage collection
+        # 5. Force garbage collection
         collected = gc.collect()
         self.stats["gc_collections"] += 1
         self.stats["memory_cleanups"] += 1

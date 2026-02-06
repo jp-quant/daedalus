@@ -46,9 +46,16 @@ CPU_COUNT = os.cpu_count() or 4
 
 # How often to clear CCXT internal caches (seconds)
 # CCXT Pro maintains internal ArrayCache objects for trades, tickers, etc.
-# Even with tradesLimit=1, the internal orderbook objects accumulate
-# Python dict/list overhead. Periodic clearing helps on memory-constrained devices.
-CCXT_CACHE_CLEAR_INTERVAL = 300  # 5 minutes
+# Additionally, exchange.orderbooks holds full OrderBook objects per symbol
+# that accumulate Python overhead. Periodic clearing is critical on Pi4.
+CCXT_CACHE_CLEAR_INTERVAL = 120  # 2 minutes (aggressive for Pi4)
+
+# Maximum symbols per bulk subscription call.
+# Coinbase Advanced has practical limits — too many symbols in one
+# subscription overloads the WebSocket with L2 updates, causing ping-pong
+# timeouts. Individual symbol loops are more resilient to disconnections.
+# For orderbooks, we ALWAYS use per-symbol loops to isolate failures.
+DEFAULT_BULK_BATCH_SIZE = 10
 
 
 class CcxtCollector(BaseCollector):
@@ -126,6 +133,12 @@ class CcxtCollector(BaseCollector):
         """
         Main collection loop.
         Initializes exchange, spawns channel loops, and handles cleanup.
+        
+        Subscription strategy:
+        - watchOrderBook: ALWAYS per-symbol loops (isolates failures, prevents
+          cascading timeouts when one symbol's updates overwhelm the connection)
+        - watchTicker/watchTrades: Use bulk methods when available, with small
+          batch sizes to limit per-subscription bandwidth
         """
         try:
             exchange_class = getattr(ccxtpro, self.exchange_id)
@@ -133,20 +146,16 @@ class CcxtCollector(BaseCollector):
             logger.error(f"Exchange {self.exchange_id} not found in ccxt.pro")
             return
 
-        # Initialize exchange
-        # enableRateLimit: True is recommended by CCXT to handle the initial REST handshake 
-        # and internal throttling to avoid 429s. It generally does not affect WebSocket 
-        # throughput once connected, but ensures connection stability.
+        # Initialize exchange with memory-optimized settings
         #
-        # MEMORY OPTIMIZATION: Set aggressive cache limits.
-        # CCXT Pro maintains internal ArrayCache per symbol for trades, tickers, etc.
-        # Without limits, these caches grow unbounded and leak hundreds of MB over hours.
-        # We write everything to Parquet immediately, so we don't need CCXT's caches.
+        # CCXT Pro maintains internal caches (ArrayCache) per symbol for trades,
+        # tickers, OHLCV. We write everything to Parquet immediately, so we set
+        # aggressive limits. Additionally, we increase WebSocket tolerance for
+        # ping-pong keepalive on Pi4 where CPU spikes can delay pong responses.
         exchange_options = dict(self.options)  # Copy to avoid mutating original
-        exchange_options.setdefault('tradesLimit', 1)       # Don't cache trades (we persist to Parquet)
+        exchange_options.setdefault('tradesLimit', 1)       # Don't cache trades
         exchange_options.setdefault('OHLCVLimit', 1)        # Don't cache OHLCV
         exchange_options.setdefault('ordersLimit', 1)        # Don't cache orders
-        exchange_options.setdefault('tickersLimit', 1)       # Don't cache tickers (available in ccxt >= 4.x)
         
         config = {
             'apiKey': self.api_key,
@@ -156,44 +165,56 @@ class CcxtCollector(BaseCollector):
             'options': exchange_options,
         }
         self.exchange = exchange_class(config)
+        
+        # Increase ping-pong tolerance for Pi4 (CPU spikes delay pong responses)
+        # Default: keepAlive=30000ms, maxPingPongMisses=2 → 60s timeout
+        # Pi4 setting: keepAlive=30000ms, maxPingPongMisses=4 → 120s timeout
+        if hasattr(self.exchange, 'streaming'):
+            self.exchange.streaming = {
+                **self.exchange.streaming,
+                'maxPingPongMisses': 4,  # More tolerant on constrained hardware
+            }
+        
         logger.info(f"Initialized CCXT exchange {self.exchange_id}")
 
         loops = []
         delay_counter = 0
-        # 100ms delay between subscriptions to avoid rate limits
-        # Adjust this if the exchange is still strict
-        delay_step = 1
+        delay_step = 0.5  # 500ms between subscription starts
         
         for method, symbols in self.channels.items():
             if not hasattr(self.exchange, method):
                 logger.warning(f"Exchange {self.exchange_id} does not support {method}")
                 continue
-                
-            # Check for bulk method support
+            
+            # ORDERBOOK: Always use per-symbol loops.
+            # Reason: Bulk orderbook subscriptions create enormous bandwidth on a single
+            # WebSocket. When one symbol's deep book generates heavy traffic, ping-pong
+            # keepalive gets delayed, causing RequestTimeout for ALL subscribed symbols.
+            # Per-symbol loops isolate failures — one symbol's timeout doesn't affect others.
+            if method == "watchOrderBook":
+                for symbol in symbols:
+                    loops.append(self._symbol_loop(method, symbol, start_delay=delay_counter * delay_step))
+                    delay_counter += 1
+                continue
+            
+            # TICKER/TRADES: Use bulk methods with small batch sizes
             bulk_method = self.BULK_METHODS.get(method)
             use_bulk = False
             if bulk_method and hasattr(self.exchange, bulk_method) and symbols:
-                # Check if exchange capability explicitly says True (optional but good)
                 if self.exchange.has.get(bulk_method):
                     use_bulk = True
             
             if use_bulk:
-                # Batch symbols to avoid rate limits (especially for Coinbase)
-                # Default to 10 as requested for Coinbase Advanced Trade
-                batch_size = self.options.get('orderbook_watch_batch_size', 20)
-                
+                batch_size = self.options.get('bulk_batch_size', DEFAULT_BULK_BATCH_SIZE)
                 for i in range(0, len(symbols), batch_size):
                     batch = symbols[i:i + batch_size]
                     loops.append(self._bulk_loop(method, bulk_method, batch, start_delay=delay_counter * delay_step))
                     delay_counter += 1
-                    
             elif symbols:
-                # Create a loop for each symbol if the method requires it
                 for symbol in symbols:
                     loops.append(self._symbol_loop(method, symbol, start_delay=delay_counter * delay_step))
                     delay_counter += 1
             else:
-                # Method without symbols (e.g. watchBalance)
                 loops.append(self._method_loop(method))
         
         if not loops:
@@ -205,19 +226,18 @@ class CcxtCollector(BaseCollector):
 
         # Run all loops concurrently
         try:
-            # Stagger the start of each loop to avoid rate limits
-            # We wrap the loops in a way that they start with a delay
-            # But asyncio.gather expects coroutines. 
-            # We can modify _symbol_loop to accept a delay.
-            await asyncio.gather(*loops)
+            await asyncio.gather(*loops, return_exceptions=True)
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"Error in CCXT collector main loop for {self.exchange_id}: {e}")
         finally:
-            # Close exchange connection
+            # Close exchange connection and clear all internal state
             if self.exchange:
-                await self.exchange.close()
+                try:
+                    await self.exchange.close()
+                except Exception as e:
+                    logger.warning(f"Error closing exchange {self.exchange_id}: {e}")
                 self.exchange = None
             logger.info(f"Closed CCXT exchange {self.exchange_id}")
 
@@ -225,16 +245,23 @@ class CcxtCollector(BaseCollector):
         """
         Periodically clear CCXT Pro internal caches to prevent memory growth.
         
-        CCXT Pro maintains internal ArrayCache objects for trades, tickers, OHLCV, etc.
-        Even with tradesLimit=1, the Python dict/list overhead from the exchange's
-        internal state (orderbooks dict, tickers dict, trades dict) accumulates
-        over hours of operation. This is especially critical on memory-constrained
-        devices like Raspberry Pi 4.
+        CCXT Pro maintains several internal data structures that grow unboundedly:
         
-        This task runs alongside the data collection loops and periodically:
-        1. Clears the internal trades cache (we already wrote data to Parquet)
-        2. Clears the internal tickers cache
-        3. Forces Python garbage collection
+        1. exchange.trades: ArrayCacheBySymbolById with hashmap + index duplicates
+           - Even with tradesLimit=1, the hashmap/index structures have per-symbol overhead
+        2. exchange.tickers: Dict of ticker dicts, one per symbol
+        3. exchange.orderbooks: Dict of OrderBook objects, each with:
+           - Two OrderBookSide lists (bids/asks) with parallel _index lists  
+           - A cache list for pending updates
+           - NOT bounded by depth parameter between limit() calls
+        4. exchange.ohlcvs: Similar ArrayCache structure
+        
+        Since we write all data to Parquet immediately, none of these caches serve 
+        any purpose. We clear them aggressively.
+        
+        Note: We do NOT clear exchange.orderbooks because CCXT uses them for
+        incremental orderbook maintenance. Clearing them would force full snapshots
+        on every update. Instead, we just let the depth limit control their size.
         """
         logger.info(f"[{self.exchange_id}] Cache clearing task started (interval={CCXT_CACHE_CLEAR_INTERVAL}s)")
         
@@ -247,7 +274,7 @@ class CcxtCollector(BaseCollector):
                 
                 cleared_items = 0
                 
-                # Clear trades cache - we've already written these to Parquet
+                # Clear trades cache — we've already written these to Parquet
                 if hasattr(self.exchange, 'trades') and self.exchange.trades:
                     cleared_items += len(self.exchange.trades)
                     self.exchange.trades.clear()
@@ -262,12 +289,29 @@ class CcxtCollector(BaseCollector):
                     cleared_items += len(self.exchange.ohlcvs)
                     self.exchange.ohlcvs.clear()
                 
-                # Force garbage collection to reclaim freed memory
-                collected = gc.collect()
+                # Clear myTrades cache (if any)
+                if hasattr(self.exchange, 'myTrades') and self.exchange.myTrades:
+                    cleared_items += len(self.exchange.myTrades)
+                    self.exchange.myTrades.clear()
+                
+                # Trim orderbook internal caches.
+                # OrderBook objects have a .cache list for pending delta updates
+                # that can grow between processing cycles. Clear these.
+                if hasattr(self.exchange, 'orderbooks'):
+                    for symbol, ob in self.exchange.orderbooks.items():
+                        if hasattr(ob, 'cache') and ob.cache:
+                            cleared_items += len(ob.cache)
+                            ob.cache.clear()
+                
+                # Force garbage collection (gen 0+1+2) to reclaim freed memory
+                gc.collect(0)
+                gc.collect(1)
+                collected = gc.collect(2)
                 
                 logger.info(
-                    f"[{self.exchange_id}] Cache cleared: {cleared_items} entries removed, "
-                    f"gc collected {collected} objects"
+                    f"[{self.exchange_id}] Cache cleared: {cleared_items} entries, "
+                    f"orderbooks={len(getattr(self.exchange, 'orderbooks', {}))}, "
+                    f"gc_collected={collected}"
                 )
                 
             except asyncio.CancelledError:
@@ -280,54 +324,40 @@ class CcxtCollector(BaseCollector):
         """
         Loop for a specific symbol and method.
         
-        Optionally uses semaphore to limit concurrent subscription initializations
-        if max_concurrent_subscriptions is set in options.
+        Handles CCXT RequestTimeout gracefully — these occur when the WebSocket
+        ping-pong keepalive fails. CCXT internally reconnects on the next watch*()
+        call, so we just log and retry with a short delay.
         """
-        # Optional semaphore for exchanges that rate-limit during subscription setup
-        if self._subscription_semaphore:
-            async with self._subscription_semaphore:
-                if start_delay > 0:
-                    await asyncio.sleep(start_delay)
-                logger.info(f"Starting {self.exchange_id} {method} {symbol}")
-        else:
-            # No semaphore - initialize immediately (maximum throughput)
-            if start_delay > 0:
-                await asyncio.sleep(start_delay)
-            logger.info(f"Starting {self.exchange_id} {method} {symbol}")
+        if start_delay > 0:
+            await asyncio.sleep(start_delay)
+        logger.info(f"Starting {self.exchange_id} {method} {symbol}")
         
-        # Resolve internal channel name (outside semaphore - fast operation)
         channel_type = self.METHOD_TO_CHANNEL.get(method, method.replace("watch", "").lower())
         
         while not self._shutdown.is_set():
             try:
-                # Call the watch method
-                # e.g. await exchange.watchTicker(symbol)
-                response = await getattr(self.exchange, method)(symbol)
+                # Call the watch method (e.g. await exchange.watchOrderBook(symbol))
+                if method == "watchOrderBook" and self.max_orderbook_depth:
+                    response = await getattr(self.exchange, method)(symbol, limit=self.max_orderbook_depth)
+                else:
+                    response = await getattr(self.exchange, method)(symbol)
                 
-                # Prepare data for storage
+                # Prepare data for storage — strip info dict and truncate depth
                 data_to_store = response
-
-                # Handle orderbook depth truncation if configured
                 if channel_type == "orderbook" and self.max_orderbook_depth:
                     if isinstance(response, dict):
-                        # Create a shallow copy to avoid modifying CCXT internal state
-                        data_to_store = response.copy()
+                        data_to_store = {
+                            k: v for k, v in response.items() 
+                            if k != 'info'
+                        }
                         if 'bids' in response:
                             data_to_store['bids'] = response['bids'][:self.max_orderbook_depth]
                         if 'asks' in response:
                             data_to_store['asks'] = response['asks'][:self.max_orderbook_depth]
-                
-                # Capture timestamp immediately after receipt
-                capture_ts = utc_now()
-
-                # Standardize and write
-                # MEMORY OPTIMIZATION: Strip 'info' dict from data before queuing.
-                # The 'info' field contains the full raw exchange response which can be
-                # very large. We serialize it to JSON in the writer anyway, but holding
-                # the full Python dict in the queue wastes memory. Strip it here.
-                if isinstance(data_to_store, dict) and 'info' in data_to_store:
+                elif isinstance(data_to_store, dict) and 'info' in data_to_store:
                     data_to_store = {k: v for k, v in data_to_store.items() if k != 'info'}
                 
+                capture_ts = utc_now()
                 msg = {
                     "type": channel_type,
                     "exchange": self.exchange_id,
@@ -338,19 +368,26 @@ class CcxtCollector(BaseCollector):
                     "capture_ts": capture_ts.isoformat()
                 }
                 
-                # Write to log writer (non-blocking to avoid stalling the websocket loop)
                 try:
                     await self.log_writer.write(msg, block=False)
-                    self._mark_message_received()  # Track health
+                    self._mark_message_received()
                 except asyncio.QueueFull:
-                    logger.warning(f"[{self.source_name}] Queue full, dropping message")
+                    pass  # Drop silently — stats tracked by writer
                 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 if self._shutdown.is_set():
                     break
-                logger.error(f"Error in {self.exchange_id} {method} {symbol}: {e}")
-                # Simple backoff
-                await asyncio.sleep(self.reconnect_delay)
+                # RequestTimeout from ping-pong failure — CCXT reconnects automatically
+                # on next watch*() call. Short delay to let reconnection settle.
+                error_name = type(e).__name__
+                if 'Timeout' in error_name or 'timeout' in str(e).lower():
+                    logger.debug(f"[{self.exchange_id}] {method} {symbol}: timeout, reconnecting...")
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.error(f"Error in {self.exchange_id} {method} {symbol}: {e}")
+                    await asyncio.sleep(self.reconnect_delay)
 
     async def _method_loop(self, method: str):
         """Loop for a method without symbol arguments."""
@@ -383,143 +420,113 @@ class CcxtCollector(BaseCollector):
                 # Write to log writer (non-blocking)
                 try:
                     await self.log_writer.write(msg, block=False)
-                    self._mark_message_received()  # Track health
+                    self._mark_message_received()
                 except asyncio.QueueFull:
-                    logger.warning(f"[{self.source_name}] Queue full, dropping message")
+                    pass
                 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 if self._shutdown.is_set():
                     break
-                logger.error(f"Error in {self.exchange_id} {method}: {e}")
-                await asyncio.sleep(self.reconnect_delay)
+                error_name = type(e).__name__
+                if 'Timeout' in error_name or 'timeout' in str(e).lower():
+                    logger.debug(f"[{self.exchange_id}] {method}: timeout, reconnecting...")
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.error(f"Error in {self.exchange_id} {method}: {e}")
+                    await asyncio.sleep(self.reconnect_delay)
 
     async def _bulk_loop(self, method: str, bulk_method: str, symbols: List[str], start_delay: float = 0.0):
         """
-        Loop for bulk subscription methods.
+        Loop for bulk subscription methods (tickers, trades).
         
-        Optionally uses semaphore to limit concurrent subscription initializations
-        if max_concurrent_subscriptions is set in options.
+        Handles CCXT RequestTimeout gracefully — these occur when the WebSocket
+        ping-pong keepalive fails. CCXT internally reconnects on the next watch*()
+        call, so we just log and retry with a short delay.
         """
-        # Optional semaphore for exchanges that rate-limit during subscription setup
-        if self._subscription_semaphore:
-            async with self._subscription_semaphore:
-                if start_delay > 0:
-                    await asyncio.sleep(start_delay)
-                logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
-        else:
-            # No semaphore - initialize immediately (maximum throughput)
-            if start_delay > 0:
-                await asyncio.sleep(start_delay)
-            logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
+        if start_delay > 0:
+            await asyncio.sleep(start_delay)
+        logger.info(f"Starting {self.exchange_id} {bulk_method} for {len(symbols)} symbols")
         
-        # Resolve channel type (outside semaphore - fast operation)
         channel_type = self.METHOD_TO_CHANNEL.get(method, method.replace("watch", "").lower())
         
         while not self._shutdown.is_set():
             try:
                 # Call bulk method
                 if bulk_method == "watchOrderBookForSymbols" and self.max_orderbook_depth:
-                     response = await getattr(self.exchange, bulk_method)(symbols, limit=self.max_orderbook_depth)
+                    response = await getattr(self.exchange, bulk_method)(symbols, limit=self.max_orderbook_depth)
                 else:
-                     response = await getattr(self.exchange, bulk_method)(symbols)
+                    response = await getattr(self.exchange, bulk_method)(symbols)
                 
                 capture_ts = utc_now()
-                msgs = []
                 
                 if bulk_method == "watchTickers":
-                    # response is Dict[symbol, Ticker] or List[Ticker]
-                    if isinstance(response, dict):
-                        for sym, ticker in response.items():
-                            # Strip 'info' to reduce memory pressure
-                            ticker_data = {k: v for k, v in ticker.items() if k != 'info'} if isinstance(ticker, dict) else ticker
-                            msgs.append({
-                                "type": channel_type,
-                                "exchange": self.exchange_id,
-                                "symbol": sym,
-                                "method": method,
-                                "data": ticker_data,
+                    items = response.items() if isinstance(response, dict) else \
+                            ((t.get('symbol'), t) for t in response)
+                    for sym, ticker in items:
+                        ticker_data = {k: v for k, v in ticker.items() if k != 'info'} if isinstance(ticker, dict) else ticker
+                        try:
+                            await self.log_writer.write({
+                                "type": channel_type, "exchange": self.exchange_id,
+                                "symbol": sym, "method": method, "data": ticker_data,
                                 "collected_at": self.exchange.milliseconds(),
                                 "capture_ts": capture_ts.isoformat()
-                            })
-                    elif isinstance(response, list):
-                         for ticker in response:
-                            sym = ticker.get('symbol')
-                            ticker_data = {k: v for k, v in ticker.items() if k != 'info'} if isinstance(ticker, dict) else ticker
-                            msgs.append({
-                                "type": channel_type,
-                                "exchange": self.exchange_id,
-                                "symbol": sym,
-                                "method": method,
-                                "data": ticker_data,
-                                "collected_at": self.exchange.milliseconds(),
-                                "capture_ts": capture_ts.isoformat()
-                            })
+                            }, block=False)
+                            self._mark_message_received()
+                        except asyncio.QueueFull:
+                            pass
 
                 elif bulk_method == "watchTradesForSymbols":
-                    # response is List[Trade]
                     if isinstance(response, list) and response:
-                        # Group by symbol to be safe
                         by_symbol = {}
                         for trade in response:
                             s = trade.get('symbol')
-                            # Strip 'info' from each trade to reduce memory
                             trade_clean = {k: v for k, v in trade.items() if k != 'info'} if isinstance(trade, dict) else trade
-                            if s not in by_symbol:
-                                by_symbol[s] = []
-                            by_symbol[s].append(trade_clean)
+                            by_symbol.setdefault(s, []).append(trade_clean)
                         
                         for s, trades in by_symbol.items():
-                            msgs.append({
-                                "type": channel_type,
-                                "exchange": self.exchange_id,
-                                "symbol": s,
-                                "method": method,
-                                "data": trades,
-                                "collected_at": self.exchange.milliseconds(),
-                                "capture_ts": capture_ts.isoformat()
-                            })
+                            try:
+                                await self.log_writer.write({
+                                    "type": channel_type, "exchange": self.exchange_id,
+                                    "symbol": s, "method": method, "data": trades,
+                                    "collected_at": self.exchange.milliseconds(),
+                                    "capture_ts": capture_ts.isoformat()
+                                }, block=False)
+                                self._mark_message_received()
+                            except asyncio.QueueFull:
+                                pass
+                        del by_symbol
 
                 elif bulk_method == "watchOrderBookForSymbols":
-                    # response is OrderBook (dict) for the updated symbol
                     sym = response.get('symbol')
-                    data_to_store = response
+                    data_to_store = {k: v for k, v in response.items() if k != 'info'}
                     if self.max_orderbook_depth:
-                        if isinstance(response, dict):
-                            data_to_store = response.copy()
-                            if 'bids' in response:
-                                data_to_store['bids'] = response['bids'][:self.max_orderbook_depth]
-                            if 'asks' in response:
-                                data_to_store['asks'] = response['asks'][:self.max_orderbook_depth]
+                        if 'bids' in data_to_store:
+                            data_to_store['bids'] = data_to_store['bids'][:self.max_orderbook_depth]
+                        if 'asks' in data_to_store:
+                            data_to_store['asks'] = data_to_store['asks'][:self.max_orderbook_depth]
                     
-                    # Strip 'info' to reduce memory
-                    if isinstance(data_to_store, dict) and 'info' in data_to_store:
-                        data_to_store = {k: v for k, v in data_to_store.items() if k != 'info'}
-                    
-                    msgs.append({
-                        "type": channel_type,
-                        "exchange": self.exchange_id,
-                        "symbol": sym,
-                        "method": method,
-                        "data": data_to_store,
-                        "collected_at": self.exchange.milliseconds(),
-                        "capture_ts": capture_ts.isoformat()
-                    })
-                
-                else:
-                    # Fallback for other bulk methods (e.g. OHLCV)
-                    # Assuming they return a structure with 'symbol' or we can't easily map
-                    logger.warning(f"Unhandled bulk method return for {bulk_method}")
-
-                # Write messages
-                for msg in msgs:
                     try:
-                        await self.log_writer.write(msg, block=False)
-                        self._mark_message_received()  # Track health
+                        await self.log_writer.write({
+                            "type": channel_type, "exchange": self.exchange_id,
+                            "symbol": sym, "method": method, "data": data_to_store,
+                            "collected_at": self.exchange.milliseconds(),
+                            "capture_ts": capture_ts.isoformat()
+                        }, block=False)
+                        self._mark_message_received()
                     except asyncio.QueueFull:
                         pass
-
+                
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 if self._shutdown.is_set():
                     break
-                logger.error(f"Error in {self.exchange_id} {bulk_method}: {e}")
-                await asyncio.sleep(self.reconnect_delay)
+                error_name = type(e).__name__
+                if 'Timeout' in error_name or 'timeout' in str(e).lower():
+                    logger.debug(f"[{self.exchange_id}] {bulk_method}: timeout, reconnecting...")
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.error(f"Error in {self.exchange_id} {bulk_method}: {e}")
+                    await asyncio.sleep(self.reconnect_delay)

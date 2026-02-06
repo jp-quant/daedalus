@@ -53,6 +53,37 @@ async def main():
         format=config.log_format
     )
     
+    # Install global asyncio exception handler to suppress CCXT's internal
+    # "Future exception was never retrieved" warnings. These occur when CCXT's
+    # WebSocket client rejects pending futures during reconnection — they are
+    # harmless but spam the logs.
+    loop = asyncio.get_running_loop()
+    _original_handler = loop.get_exception_handler()
+    
+    def _ccxt_exception_handler(loop, context):
+        """Suppress CCXT internal future exceptions, log others normally."""
+        exception = context.get('exception')
+        message = context.get('message', '')
+        
+        # CCXT RequestTimeout or NetworkError from rejected futures during reconnect
+        if exception:
+            exc_name = type(exception).__name__
+            if exc_name in ('RequestTimeout', 'NetworkError', 'ExchangeNotAvailable'):
+                logger.debug(f"Suppressed CCXT future exception: {exc_name}")
+                return
+        
+        # "Future exception was never retrieved" with CCXT-related errors
+        if 'Future exception' in message:
+            logger.debug(f"Suppressed unhandled future: {message}")
+            return
+        
+        # All other exceptions — use default handler
+        if _original_handler:
+            _original_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+    
+    loop.set_exception_handler(_ccxt_exception_handler)    
     # Create pipeline
     pipeline = IngestionPipeline(config, sources=sources)
     
