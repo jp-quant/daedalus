@@ -457,6 +457,20 @@ class CcxtCollector(BaseCollector):
         
         channel_type = self.METHOD_TO_CHANNEL.get(method, method.replace("watch", "").lower())
         
+        # Build symbol remap for exchanges where WS API returns different
+        # symbols than subscribed (e.g., Coinbase returns BTC/USD for BTC/USDC).
+        # CCXT's tryResolveUsdc fixes subscription resolution but NOT the
+        # symbol field in returned data. Since the canonical symbol is USD,
+        # no remap is needed if config uses USD pairs. If config uses USDC,
+        # remap CCXT's USD response back to the configured USDC symbol.
+        symbol_remap = {}
+        for s in symbols:
+            if s.endswith('/USDC'):
+                usd_variant = s[:-1]  # BTC/USDC -> BTC/USD
+                symbol_remap[usd_variant] = s
+        if symbol_remap:
+            logger.info(f"[{self.exchange_id}] Symbol remap active: {len(symbol_remap)} USD->USDC mappings")
+        
         while not self._shutdown.is_set():
             try:
                 # Call bulk method
@@ -471,6 +485,7 @@ class CcxtCollector(BaseCollector):
                     items = response.items() if isinstance(response, dict) else \
                             ((t.get('symbol'), t) for t in response)
                     for sym, ticker in items:
+                        sym = symbol_remap.get(sym, sym)
                         ticker_data = {k: v for k, v in ticker.items() if k != 'info'} if isinstance(ticker, dict) else ticker
                         try:
                             await self.log_writer.write({
@@ -487,7 +502,7 @@ class CcxtCollector(BaseCollector):
                     if isinstance(response, list) and response:
                         by_symbol = {}
                         for trade in response:
-                            s = trade.get('symbol')
+                            s = symbol_remap.get(trade.get('symbol'), trade.get('symbol'))
                             trade_clean = {k: v for k, v in trade.items() if k != 'info'} if isinstance(trade, dict) else trade
                             by_symbol.setdefault(s, []).append(trade_clean)
                         
@@ -505,7 +520,7 @@ class CcxtCollector(BaseCollector):
                         del by_symbol
 
                 elif bulk_method == "watchOrderBookForSymbols":
-                    sym = response.get('symbol')
+                    sym = symbol_remap.get(response.get('symbol'), response.get('symbol'))
                     data_to_store = {k: v for k, v in response.items() if k != 'info'}
                     if self.max_orderbook_depth:
                         if 'bids' in data_to_store:
