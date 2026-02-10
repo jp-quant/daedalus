@@ -174,7 +174,18 @@ class OrderbookFeatureTransform(StatefulTransform):
         
         feature_config = context.feature_config
         
-        # Step 0: Optional ASOF resampling (prevents lookahead bias)
+        # Step 0a: Normalize quote currencies (BTC-USDC → BTC-USD, etc.)
+        # This enables seamless joining of data from different quote partitions
+        # (e.g., orderbook from symbol=BTC-USDC + trades from symbol=BTC-USD)
+        if feature_config.normalize_quotes:
+            from etl.utils.symbol import normalize_symbol_expr
+            logger.info("Normalizing quote currencies (USDC/USDT/... → USD)")
+            if "symbol" in orderbook_lf.collect_schema().names():
+                orderbook_lf = orderbook_lf.with_columns(normalize_symbol_expr("symbol"))
+            if trades_lf is not None and "symbol" in trades_lf.collect_schema().names():
+                trades_lf = trades_lf.with_columns(normalize_symbol_expr("symbol"))
+        
+        # Step 0b: Optional ASOF resampling (prevents lookahead bias)
         if feature_config.resample_frequency:
             logger.info(
                 f"Resampling orderbook to {feature_config.resample_frequency} "

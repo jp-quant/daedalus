@@ -276,6 +276,16 @@ class FeatureConfig:
     # ==========================================================================
     drop_raw_book_arrays: bool = True  # Drop raw bids/asks arrays after extraction
     
+    # ==========================================================================
+    # QUOTE CURRENCY NORMALIZATION
+    # ==========================================================================
+    # When True, stablecoin quote currencies (USDC, USDT, BUSD, etc.) are
+    # normalized to canonical USD before feature computation. This allows
+    # seamless joining of data across different quote currencies:
+    #   - Orderbook from symbol=BTC-USDC + Trades from symbol=BTC-USD
+    #   - Output features will use the canonical form (BTC-USD)
+    normalize_quotes: bool = True
+    
     def has_category(self, category: FeatureCategory) -> bool:
         """Check if a feature category is enabled."""
         return category in self.categories
@@ -291,16 +301,26 @@ class FilterSpec:
     
     Attributes:
         exchange: Filter by exchange (exact match).
-        symbol: Filter by symbol (exact match).
+        symbol: Filter by symbol (exact match, or expanded with normalize_quotes).
         year: Filter by year (exact match or use start_date/end_date).
         month: Filter by month (exact match or use start_date/end_date).
         day: Filter by day (exact match or use start_date/end_date).
         start_date: Inclusive start date for range queries (YYYY-MM-DD string).
         end_date: Inclusive end date for range queries (YYYY-MM-DD string).
+        normalize_quotes: When True and symbol is set, matches all quote currency
+            variants (USD, USDC, USDT, etc.) instead of exact symbol match.
+            This enables loading data from different quote partitions.
     
     Example:
         # Exact partition match
         filter_spec = FilterSpec(exchange="binanceus", symbol="BTC/USDT", year=2025, month=12)
+        
+        # Match all USD-equivalent quote variants (BTC-USD, BTC-USDC, BTC-USDT, ...)
+        filter_spec = FilterSpec(
+            exchange="coinbaseadvanced",
+            symbol="BTC-USDC",
+            normalize_quotes=True,  # Also matches BTC-USD, BTC-USDT, etc.
+        )
         
         # Date range (for multi-day batch processing)
         filter_spec = FilterSpec(
@@ -320,10 +340,16 @@ class FilterSpec:
     hour: Optional[int] = None
     start_date: Optional[str] = None  # YYYY-MM-DD format
     end_date: Optional[str] = None    # YYYY-MM-DD format
+    normalize_quotes: bool = False     # Expand symbol to all USD-equivalent variants
     
     def to_polars_filter(self) -> Optional[pl.Expr]:
         """
         Convert to Polars filter expression.
+        
+        When normalize_quotes is True and a symbol is specified, the filter
+        matches all quote currency variants (USD, USDC, USDT, etc.) using
+        ``is_in`` instead of exact equality. This enables loading data from
+        partitions with different stablecoin quote currencies.
         
         Returns:
             Combined filter expression or None if no filters specified.
@@ -333,7 +359,15 @@ class FilterSpec:
         if self.exchange is not None:
             conditions.append(pl.col("exchange") == self.exchange)
         if self.symbol is not None:
-            conditions.append(pl.col("symbol") == self.symbol)
+            if self.normalize_quotes:
+                from etl.utils.symbol import get_symbol_variants, is_usd_quoted
+                if is_usd_quoted(self.symbol):
+                    variants = get_symbol_variants(self.symbol)
+                    conditions.append(pl.col("symbol").is_in(variants))
+                else:
+                    conditions.append(pl.col("symbol") == self.symbol)
+            else:
+                conditions.append(pl.col("symbol") == self.symbol)
         
         # Handle date range vs exact date filters
         if self.start_date or self.end_date:
@@ -373,6 +407,9 @@ class FilterSpec:
         for partition-level pruning, or ensure your Parquet reader
         supports predicate pushdown on capture_ts.
         
+        Note: When normalize_quotes is True, symbol filtering uses
+        ``in`` operator with all quote variants instead of exact match.
+        
         Returns:
             List of (column, operator, value) tuples.
         """
@@ -381,7 +418,15 @@ class FilterSpec:
         if self.exchange is not None:
             filters.append(("exchange", "=", self.exchange))
         if self.symbol is not None:
-            filters.append(("symbol", "=", self.symbol))
+            if self.normalize_quotes:
+                from etl.utils.symbol import get_symbol_variants, is_usd_quoted
+                if is_usd_quoted(self.symbol):
+                    variants = get_symbol_variants(self.symbol)
+                    filters.append(("symbol", "in", variants))
+                else:
+                    filters.append(("symbol", "=", self.symbol))
+            else:
+                filters.append(("symbol", "=", self.symbol))
         if self.year is not None:
             filters.append(("year", "=", self.year))
         if self.month is not None:
@@ -418,6 +463,8 @@ class FilterSpec:
             result["start_date"] = self.start_date
         if self.end_date is not None:
             result["end_date"] = self.end_date
+        if self.normalize_quotes:
+            result["normalize_quotes"] = True
         return result
     
     @classmethod
@@ -440,6 +487,7 @@ class FilterSpec:
             hour=data.get("hour"),
             start_date=data.get("start_date"),
             end_date=data.get("end_date"),
+            normalize_quotes=data.get("normalize_quotes", False),
         )
     
     def __repr__(self) -> str:

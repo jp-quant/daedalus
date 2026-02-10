@@ -145,6 +145,7 @@ def run_trades_etl(
     dry_run: bool = False,
     limit_rows: Optional[int] = None,
     config: Optional[DaedalusConfig] = None,
+    normalize_quotes: bool = True,
 ) -> Dict[str, Any]:
     """
     Run the trades feature ETL pipeline using TransformExecutor.
@@ -192,6 +193,7 @@ def run_trades_etl(
         filter_spec = FilterSpec(
             exchange=exchange,
             symbol=symbol,
+            normalize_quotes=normalize_quotes,
         )
         logger.info(f"Filter: {filter_spec}")
     
@@ -201,6 +203,8 @@ def run_trades_etl(
         rolling_windows=rolling_windows,
         enable_rolling=enable_rolling,
     )
+    # Propagate normalize_quotes to feature config
+    feature_config.normalize_quotes = normalize_quotes
     
     # Log configuration
     logger.info(f"Input:  {input_path}")
@@ -299,6 +303,13 @@ def main():
         help="Preview without writing outputs",
     )
     parser.add_argument(
+        "--normalize-quotes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize quote currencies (USD/USDC/USDT treated as equivalent). "
+             "Default: enabled. Use --no-normalize-quotes to disable.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -336,6 +347,7 @@ def main():
         dry_run=args.dry_run,
         limit_rows=args.limit,
         config=config,
+        normalize_quotes=args.normalize_quotes,
     )
     
     return 0 if result.get("success") else 1

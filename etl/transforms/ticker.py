@@ -74,6 +74,13 @@ class TickerFeatureTransform(BaseTransform):
         
         logger.info(f"Transforming ticker data with {self.name}")
         
+        # Normalize quote currencies if enabled (BTC-USDC -> BTC-USD)
+        if context.feature_config and context.feature_config.normalize_quotes:
+            from etl.utils.symbol import normalize_symbol_expr
+            if "symbol" in bronze_lf.collect_schema().names():
+                logger.info("Normalizing quote currencies (USDC/USDT/... -> USD)")
+                bronze_lf = bronze_lf.with_columns(normalize_symbol_expr("symbol"))
+        
         # Apply ticker feature engineering
         silver_lf = compute_ticker_features(bronze_lf)
         

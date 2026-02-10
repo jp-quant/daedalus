@@ -9,6 +9,7 @@ This script properly delegates I/O to the executor while supporting:
 - Stateful feature computation with checkpoint/resume
 - Optional trades data for TFI calculation
 - FilterSpec for efficient partition pruning
+- Quote currency normalization (USD/USDC/USDT treated as equivalent)
 
 Features computed (in OrderbookFeatureTransform):
 - Structural: L0-LN prices/sizes, mid, spread, microprice, imbalances, depth bands
@@ -17,6 +18,22 @@ Features computed (in OrderbookFeatureTransform):
 - Advanced: Kyle's Lambda, VPIN
 
 *TFI requires trades data. If --trades is not provided, TFI will be zero.
+
+Quote Currency Normalization:
+    By default (--normalize-quotes), stablecoin quote currencies are treated as
+    equivalent: USD, USDC, USDT, BUSD, DAI, etc. are all normalized to USD.
+    
+    This solves the common problem where different channels store data under
+    different quote symbols:
+      - Orderbook: symbol=BTC-USDC (from exchange config)
+      - Trades:    symbol=BTC-USD  (from CCXT WS response)
+    
+    With normalization enabled:
+    1. FilterSpec matches ALL quote variants when filtering partitions
+    2. Symbol columns are normalized to canonical USD before processing
+    3. Output features use the canonical form (BTC-USD)
+    
+    Use --no-normalize-quotes to disable this behavior.
 
 Note: Bar aggregation (silver → gold) is handled separately by run_bars.py.
 This script focuses on bronze → silver feature engineering.
@@ -30,6 +47,12 @@ Usage:
 
     # Process specific exchange/symbol partition
     python scripts/etl/run_orderbook_features.py --exchange binanceus --symbol BTC/USDT
+
+    # Coinbase: orderbook=BTC-USDC, trades=BTC-USD (auto-matched with quote normalization)
+    python scripts/etl/run_orderbook_features.py --exchange coinbaseadvanced --symbol BTC-USDC --trades data/raw/ready/ccxt/trades
+
+    # Disable quote normalization (strict symbol matching)
+    python scripts/etl/run_orderbook_features.py --no-normalize-quotes
 
     # Dry run (preview only)
     python scripts/etl/run_orderbook_features.py --dry-run
@@ -309,6 +332,7 @@ def run_orderbook_etl(
     limit_rows: Optional[int] = None,
     state_path: Optional[Path] = None,
     config: Optional[DaedalusConfig] = None,
+    normalize_quotes: bool = True,
 ) -> Dict[str, Any]:
     """
     Run the orderbook feature ETL pipeline using TransformExecutor.
@@ -327,6 +351,9 @@ def run_orderbook_etl(
         limit_rows: Optional limit on rows to process
         state_path: Optional path for state persistence
         config: Optional Daedalus configuration
+        normalize_quotes: If True, treat USD/USDC/USDT as equivalent quote
+            currencies. Enables loading orderbook from BTC-USDC partitions
+            and trades from BTC-USD partitions seamlessly. Default True.
     
     Returns:
         Execution statistics dictionary
@@ -365,11 +392,19 @@ def run_orderbook_etl(
             month=int(month) if month is not None else None,
             day=int(day) if day is not None else None,
             hour=int(hour) if hour is not None else None,
+            normalize_quotes=normalize_quotes,
         )
         logger.info(f"Filter: {filter_spec}")
+        if normalize_quotes and symbol:
+            from etl.utils.symbol import get_symbol_variants, is_usd_quoted
+            if is_usd_quoted(symbol):
+                variants = get_symbol_variants(symbol)
+                logger.info(f"Quote normalization ON — matching variants: {variants}")
     
     # Create feature config from options
     feature_config = create_feature_config_from_options(config)
+    # Propagate normalize_quotes to feature config
+    feature_config.normalize_quotes = normalize_quotes
     
     # Log configuration
     logger.info(f"Input:  {input_path}")
@@ -381,6 +416,7 @@ def run_orderbook_etl(
     logger.info(f"Categories: {[c.value for c in feature_config.categories]}")
     logger.info(f"Depth levels: {feature_config.depth_levels}")
     logger.info(f"Rolling windows: {feature_config.rolling_windows}")
+    logger.info(f"Quote normalization: {'ON' if normalize_quotes else 'OFF'}")
     if limit_rows:
         logger.info(f"Row limit: {limit_rows:,}")
     if dry_run:
@@ -519,6 +555,13 @@ def main():
         help="Preview without writing outputs",
     )
     parser.add_argument(
+        "--normalize-quotes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize quote currencies (USD/USDC/USDT treated as equivalent). "
+             "Default: enabled. Use --no-normalize-quotes to disable.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -556,6 +599,7 @@ def main():
         limit_rows=args.limit,
         state_path=Path(args.state_path) if args.state_path else None,
         config=config,
+        normalize_quotes=args.normalize_quotes,
     )
     
     return 0 if result.get("success") else 1
