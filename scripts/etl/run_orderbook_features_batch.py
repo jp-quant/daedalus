@@ -51,14 +51,37 @@ Constraints & Design Decisions:
 
 Usage:
 ======
+All filters are optional. If no filters are provided, the script processes
+all available partitions found under the input orderbook path.
+
+Examples:
+---------
     # Process all data (auto-detect partitions)
     python scripts/etl/run_orderbook_features_batch.py
 
-    # Process specific exchange
+    # Process a specific exchange
     python scripts/etl/run_orderbook_features_batch.py --exchange coinbaseadvanced
 
-    # Limit parallel workers
+    # Process a subset of symbols (comma-separated list)
+    python scripts/etl/run_orderbook_features_batch.py --symbols BTC-USD,ETH-USD,SOL-USD
+
+    # Process a specific month (year/month filters)
+    python scripts/etl/run_orderbook_features_batch.py --year 2026 --month 2
+
+    # Process a specific day/hour
+    python scripts/etl/run_orderbook_features_batch.py --year 2026 --month 2 --day 9 --hour 14
+
+    # Combine filters (exchange + symbols + month)
+    python scripts/etl/run_orderbook_features_batch.py \
+        --exchange coinbaseadvanced \
+        --symbols BTC-USD,ETH-USD,SOL-USD \
+        --year 2026 --month 2
+
+    # Limit parallel workers (CPU-bound)
     python scripts/etl/run_orderbook_features_batch.py --workers 4
+
+    # Cap concurrent symbols to manage memory (default: 10, 0 disables batching)
+    python scripts/etl/run_orderbook_features_batch.py --max-symbols 10
 
     # Dry run (show what would be processed)
     python scripts/etl/run_orderbook_features_batch.py --dry-run
@@ -168,7 +191,11 @@ class BatchStats:
 def build_partition_manifest(
     base_path: Path,
     exchange_filter: Optional[str] = None,
-    symbol_filter: Optional[str] = None,
+    symbol_filter: Optional[set] = None,
+    year_filter: Optional[int] = None,
+    month_filter: Optional[int] = None,
+    day_filter: Optional[int] = None,
+    hour_filter: Optional[int] = None,
 ) -> Dict[str, Dict[str, List[DatetimePartition]]]:
     """
     Parse Hive-partitioned directory structure to build ETL manifest.
@@ -181,7 +208,11 @@ def build_partition_manifest(
     Args:
         base_path: Root path (e.g., data/raw/ready/ccxt/orderbook)
         exchange_filter: Optional filter for specific exchange
-        symbol_filter: Optional filter for specific symbol
+        symbol_filter: Optional filter for specific symbols
+        year_filter: Optional filter for specific year
+        month_filter: Optional filter for specific month
+        day_filter: Optional filter for specific day
+        hour_filter: Optional filter for specific hour
     
     Returns:
         Nested dict: {exchange: {symbol: [sorted_datetime_partitions]}}
@@ -210,7 +241,7 @@ def build_partition_manifest(
             # Apply filters early
             if exchange_filter and exchange != exchange_filter:
                 continue
-            if symbol_filter and symbol != symbol_filter:
+            if symbol_filter and symbol not in symbol_filter:
                 continue
             
             year = int(parts.get("year", 0))
@@ -218,6 +249,15 @@ def build_partition_manifest(
             day = int(parts.get("day", 0))
             hour = int(parts.get("hour", 0))
             
+            if year_filter is not None and year != year_filter:
+                continue
+            if month_filter is not None and month != month_filter:
+                continue
+            if day_filter is not None and day != day_filter:
+                continue
+            if hour_filter is not None and hour != hour_filter:
+                continue
+
             if exchange and symbol and year:
                 # Tuple for deduplication (multiple files per partition)
                 result[exchange][symbol].add((year, month, day, hour))
@@ -469,6 +509,7 @@ class BatchOrchestrator:
         output_path: Path,
         state_dir: Path,
         max_workers: Optional[int] = None,
+        max_symbols_per_batch: Optional[int] = 10,
         dry_run: bool = False,
         debug: bool = False,
     ):
@@ -489,6 +530,7 @@ class BatchOrchestrator:
         self.output_path = Path(output_path)
         self.state_dir = Path(state_dir)
         self.max_workers = max_workers or mp.cpu_count()
+        self.max_symbols_per_batch = max_symbols_per_batch
         self.dry_run = dry_run
         self.debug = debug
         
@@ -499,7 +541,11 @@ class BatchOrchestrator:
     def run(
         self,
         exchange_filter: Optional[str] = None,
-        symbol_filter: Optional[str] = None,
+        symbol_filter: Optional[set] = None,
+        year_filter: Optional[int] = None,
+        month_filter: Optional[int] = None,
+        day_filter: Optional[int] = None,
+        hour_filter: Optional[int] = None,
         resume: bool = False,
     ) -> BatchStats:
         """
@@ -524,6 +570,10 @@ class BatchOrchestrator:
             self.orderbook_path,
             exchange_filter=exchange_filter,
             symbol_filter=symbol_filter,
+            year_filter=year_filter,
+            month_filter=month_filter,
+            day_filter=day_filter,
+            hour_filter=hour_filter,
         )
         
         if not manifest:
@@ -579,33 +629,47 @@ class BatchOrchestrator:
         logger.info("STEP 3: Executing jobs")
         logger.info("=" * 70)
         
-        if self.debug:
-            # Single-threaded for debugging
-            logger.info("DEBUG MODE: Single-threaded execution")
-            results = []
-            for job in tqdm(jobs, desc="Processing symbols"):
-                results.append(process_single_job(job))
+        results = []
+
+        # Limit memory by batching symbols and limiting parallel workers per batch.
+        if self.max_symbols_per_batch and self.max_symbols_per_batch > 0:
+            batches = [
+                jobs[i:i + self.max_symbols_per_batch]
+                for i in range(0, len(jobs), self.max_symbols_per_batch)
+            ]
         else:
-            # Parallel execution
-            actual_workers = min(self.max_workers, len(jobs))
+            batches = [jobs]
+
+        for batch_index, batch_jobs in enumerate(batches, start=1):
+            if len(batches) > 1:
+                logger.info(f"Starting batch {batch_index}/{len(batches)} with {len(batch_jobs)} symbols")
+
+            if self.debug:
+                # Single-threaded for debugging
+                logger.info("DEBUG MODE: Single-threaded execution")
+                for job in tqdm(batch_jobs, desc="Processing symbols"):
+                    results.append(process_single_job(job))
+                continue
+
+            # Parallel execution for this batch
+            actual_workers = min(self.max_workers, len(batch_jobs))
             logger.info(f"Using {actual_workers} parallel workers")
-            
-            results = []
+
             with ProcessPoolExecutor(max_workers=actual_workers) as executor:
-                # Submit all jobs
+                # Submit all jobs in batch
                 future_to_job = {
                     executor.submit(process_single_job, job): job
-                    for job in jobs
+                    for job in batch_jobs
                 }
-                
+
                 # Process results with progress bar
-                with tqdm(total=len(jobs), desc="Jobs completed") as pbar:
+                with tqdm(total=len(batch_jobs), desc="Jobs completed") as pbar:
                     for future in as_completed(future_to_job):
                         job = future_to_job[future]
                         try:
                             result = future.result()
                             results.append(result)
-                            
+
                             # Update progress description
                             status = "✓" if result.success else "✗"
                             pbar.set_postfix_str(
@@ -619,7 +683,7 @@ class BatchOrchestrator:
                                 symbol=job.symbol,
                                 error=str(e),
                             ))
-                        
+
                         pbar.update(1)
         
         # Step 4: Aggregate statistics
@@ -670,9 +734,21 @@ Examples:
   
   # Process specific exchange
   python scripts/etl/run_orderbook_features_batch.py --exchange coinbaseadvanced
+
+    # Process a subset of symbols
+    python scripts/etl/run_orderbook_features_batch.py --symbols BTC-USD,ETH-USD,SOL-USD
+
+    # Process a specific month
+    python scripts/etl/run_orderbook_features_batch.py --year 2026 --month 2
+
+    # Process a specific day/hour
+    python scripts/etl/run_orderbook_features_batch.py --year 2026 --month 2 --day 9 --hour 14
   
   # Limit workers
   python scripts/etl/run_orderbook_features_batch.py --workers 4
+
+    # Cap concurrent symbols (memory guard)
+    python scripts/etl/run_orderbook_features_batch.py --max-symbols 10
   
   # Dry run
   python scripts/etl/run_orderbook_features_batch.py --dry-run
@@ -717,6 +793,31 @@ Examples:
         help="Filter by symbol (e.g., BTC-USD)",
     )
     parser.add_argument(
+        "--symbols",
+        type=str,
+        help="Comma-separated list of symbols (e.g., BTC-USD,ETH-USD,SOL-USD)",
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        help="Filter by year (e.g., 2026)",
+    )
+    parser.add_argument(
+        "--month",
+        type=int,
+        help="Filter by month (1-12)",
+    )
+    parser.add_argument(
+        "--day",
+        type=int,
+        help="Filter by day (1-31)",
+    )
+    parser.add_argument(
+        "--hour",
+        type=int,
+        help="Filter by hour (0-23)",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Skip already-processed partitions (check output directory)",
@@ -727,6 +828,12 @@ Examples:
         "--workers",
         type=int,
         help=f"Max parallel workers (default: CPU count = {mp.cpu_count()})",
+    )
+    parser.add_argument(
+        "--max-symbols",
+        type=int,
+        default=10,
+        help="Max symbols to process concurrently per batch (default: 10, 0 disables batching)",
     )
     parser.add_argument(
         "--dry-run",
@@ -761,6 +868,16 @@ Examples:
         print(f"║  Exchange:  {args.exchange:<52} ║")
     if args.symbol:
         print(f"║  Symbol:    {args.symbol:<52} ║")
+    if args.symbols:
+        print(f"║  Symbols:   {args.symbols:<52} ║")
+    if args.year:
+        print(f"║  Year:      {args.year:<52} ║")
+    if args.month:
+        print(f"║  Month:     {args.month:<52} ║")
+    if args.day:
+        print(f"║  Day:       {args.day:<52} ║")
+    if args.hour:
+        print(f"║  Hour:      {args.hour:<52} ║")
     if args.dry_run:
         print("║  Mode:      DRY RUN                                                ║")
     if args.resume:
@@ -775,14 +892,25 @@ Examples:
         output_path=Path(args.output),
         state_dir=Path(args.state_dir),
         max_workers=args.workers,
+        max_symbols_per_batch=args.max_symbols,
         dry_run=args.dry_run,
         debug=args.debug,
     )
     
     try:
+        symbol_filter = None
+        if args.symbols:
+            symbol_filter = {s.strip() for s in args.symbols.split(",") if s.strip()}
+        elif args.symbol:
+            symbol_filter = {args.symbol}
+
         stats = orchestrator.run(
             exchange_filter=args.exchange,
-            symbol_filter=args.symbol,
+            symbol_filter=symbol_filter,
+            year_filter=args.year,
+            month_filter=args.month,
+            day_filter=args.day,
+            hour_filter=args.hour,
             resume=args.resume,
         )
         

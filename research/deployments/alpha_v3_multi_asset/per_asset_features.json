@@ -1,0 +1,452 @@
+{
+  "AAVE-USD": [
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.3191692488340828
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.29521701274324874
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.2789937905034128
+    },
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.26084337117471
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.2506954084770364
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.2506954084770364
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.20874076344975886
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.20690689712919805
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.19896260949273933
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.1924658512787085
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.1924658512787085
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": 0.14522716607715636
+    }
+  ],
+  "ADA-USD": [
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.442070309744318
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.442070309744318
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.44066381214237627
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.4290061414500953
+    },
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.3681514002815682
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.31060828052900136
+    },
+    {
+      "feature": "ofi_sum_5s",
+      "corr": 0.27228872531914294
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": -0.18554941444566792
+    },
+    {
+      "feature": "mlofi_sum_5s",
+      "corr": 0.16707856800393625
+    },
+    {
+      "feature": "ofi_sum_15s",
+      "corr": 0.15920277191126034
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.1423768386304525
+    },
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.1373823126002401
+    }
+  ],
+  "AVAX-USD": [
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.47748396835999674
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.47748396835999674
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.4766675393271965
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.335716398803361
+    },
+    {
+      "feature": "ofi_sum_5s",
+      "corr": 0.2258454170426902
+    },
+    {
+      "feature": "ofi_sum_15s",
+      "corr": 0.1237028667036181
+    },
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.11441277027588488
+    },
+    {
+      "feature": "ask_slope",
+      "corr": 0.11378220365068574
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": -0.10588149726396366
+    },
+    {
+      "feature": "ofi",
+      "corr": 0.10248957031738425
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": -0.09466290512326464
+    },
+    {
+      "feature": "cog_vs_mid",
+      "corr": 0.08645089171046592
+    }
+  ],
+  "BCH-USD": [
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.10674023513446058
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.10589982266602699
+    },
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.09986779918561497
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.09253001453217573
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.09253001453217573
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.09029084676874785
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.07608857001491673
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.07557249226960944
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.07404714217611798
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.07404714217611798
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.055864968619219586
+    },
+    {
+      "feature": "bid_slope",
+      "corr": -0.05544360928409082
+    }
+  ],
+  "BTC-USD": [
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.09701130246882585
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.09332074456624297
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.09256221000007316
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.09256221000007316
+    },
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.08640824299354725
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.07625305069873571
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.06453870925823782
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.06424757232282834
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.06424757232282834
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": 0.052975723125185135
+    },
+    {
+      "feature": "imb_band_50_100bps",
+      "corr": 0.047758633510927205
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.04681752440677943
+    }
+  ],
+  "DOGE-USD": [
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.3810964307326214
+    },
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.3533578659506064
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.3476464103889769
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.3363036258495494
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.32177199766539005
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.2547004502193054
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.2539457198737869
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.2539457198737869
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.24867380575441025
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.24867380575441025
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.2407147623733431
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": 0.2212229329809526
+    }
+  ],
+  "ETH-USD": [
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.16328608714852144
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.161585474303854
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.16075326104971663
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.16075326104971663
+    },
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.14439703392615952
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.12439204967863021
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.12352396315693195
+    },
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.11706681790000609
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": 0.11284497145638385
+    },
+    {
+      "feature": "imb_band_50_100bps",
+      "corr": 0.10549783513645228
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.08409801278200732
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.08409801278200732
+    }
+  ],
+  "FARTCOIN-USD": [
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.3600696870733376
+    },
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.33739263014993
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.323957687598777
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.323957687598777
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.3178158133023795
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.3002431736141264
+    },
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.25244294062141237
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.2498725821498409
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.23085593242836766
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.23085593242836766
+    },
+    {
+      "feature": "cog_vs_mid",
+      "corr": -0.15143612104969334
+    },
+    {
+      "feature": "imb_band_25_50bps",
+      "corr": 0.14412358713973356
+    }
+  ],
+  "HBAR-USD": [
+    {
+      "feature": "imbalance_L3",
+      "corr": 0.4082797771512049
+    },
+    {
+      "feature": "imbalance_L5",
+      "corr": 0.4036011405153491
+    },
+    {
+      "feature": "imb_band_5_10bps",
+      "corr": 0.36507025969573337
+    },
+    {
+      "feature": "imbalance_L1",
+      "corr": 0.32532424969988205
+    },
+    {
+      "feature": "imb_band_0_5bps",
+      "corr": 0.32532424969988205
+    },
+    {
+      "feature": "imbalance_L10",
+      "corr": 0.3183427017700133
+    },
+    {
+      "feature": "micro_minus_mid",
+      "corr": 0.30698297081087433
+    },
+    {
+      "feature": "smart_depth_imbalance",
+      "corr": 0.2762717032724099
+    },
+    {
+      "feature": "imb_band_10_25bps",
+      "corr": 0.2758682125851402
+    },
+    {
+      "feature": "total_imbalance",
+      "corr": 0.2717647360999192
+    },
+    {
+      "feature": "book_pressure",
+      "corr": 0.2717647360999192
+    },
+    {
+      "feature": "smart_bid_depth",
+      "corr": 0.21028952845897417
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "notebook": "04_multi_asset_alpha_expansion",
+  "strategy": "XGBoost Direction Classifier",
+  "thresholds": {
+    "long": 0.6,
+    "short": 0.4
+  },
+  "horizon": 30,
+  "fee_bps": 0.1,
+  "train_days": 30,
+  "test_days": 9,
+  "symbols": [
+    "AAVE-USD",
+    "ADA-USD",
+    "AVAX-USD",
+    "BCH-USD",
+    "BTC-USD",
+    "DOGE-USD",
+    "ETH-USD",
+    "FARTCOIN-USD",
+    "HBAR-USD"
+  ],
+  "profitable_assets": [
+    "AAVE-USD",
+    "ADA-USD",
+    "AVAX-USD",
+    "BCH-USD",
+    "BTC-USD",
+    "DOGE-USD",
+    "ETH-USD",
+    "FARTCOIN-USD",
+    "HBAR-USD"
+  ],
+  "features": {
+    "universal_top8": [
+      "imbalance_L3",
+      "imbalance_L5",
+      "imbalance_L1",
+      "imb_band_0_5bps",
+      "imbalance_L10",
+      "cog_vs_mid",
+      "ofi_sum_5s",
+      "smart_depth_imbalance"
+    ],
+    "full_set_size": 79
+  }
+}
