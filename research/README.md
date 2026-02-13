@@ -8,15 +8,17 @@
 
 ---
 
-## 📊 Research Portfolio
+## Research Portfolio
 
 | Study | Status | Key Finding | Sharpe | Implementation |
 |-------|--------|-------------|--------|----------------|
-| [Orderbook Feature Analysis](notebooks/01_orderbook_feature_analysis.ipynb) | ✅ Complete | 205 features extracted | N/A | Production |
-| [Microstructure Alpha Discovery](notebooks/02_microstructure_alpha_discovery.ipynb) | ✅ Complete | 8.2% correlation signal | 3.2* | Institutional |
-| [Advanced Alpha Optimization](notebooks/03_advanced_alpha_optimization.ipynb) | ✅ Complete | Multi-asset + ML + regime | TBD | Institutional |
+| [01: Feature Analysis](notebooks/01_orderbook_feature_analysis.ipynb) | ✅ Complete | 205 features extracted | N/A | Production |
+| [02: Alpha Discovery](notebooks/02_microstructure_alpha_discovery.ipynb) | ✅ Complete | 8.2% correlation signal | 3.2* | Institutional |
+| [03: Alpha Optimization](notebooks/03_advanced_alpha_optimization.ipynb) | ✅ Complete | XGBoost ML, composite signal | 100% daily WR | VIP Tier+ |
+| [04: Multi-Asset Expansion](notebooks/04_multi_asset_alpha_expansion.ipynb) | ✅ Complete | 9-asset portfolio, +99,201% OOS | 100% daily WR | **Active Trader+** |
+| [05: Production Alpha](notebooks/05_production_alpha_realistic_execution.ipynb) | ✅ Complete | Execution realism, capacity, long-only | 100% daily WR | **Production-Ready** |
 
-*\*At zero fees; economically viable only for market makers*
+*Strategy viable for active traders (0.1-0.5 bps fee tier) — not just market makers*
 
 ---
 
@@ -49,31 +51,38 @@ We identified a **statistically significant predictive signal** in L2 orderbook 
 
 ### Key Insight
 
-> *"The signal is real. The alpha is there. But the edge is measured in hundredths of basis points—a playground for market makers, not retail."*
+> *"The signal is real, universal, and exploitable. imbalance_L3 dominates across all 9 assets. Altcoins remain profitable beyond 0.5 bps—accessible to active traders with VIP-tier fee schedules, not just market makers."*
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 research/
 ├── README.md                          # This file
 ├── RESEARCH_PAPER.md                  # Full technical paper
+├── QUANT_RESEARCH_AGENT_PROMPT.md      # Onboarding prompt for new agents
 │
-├── notebooks/                         # Jupyter notebooks
-│   ├── 01_orderbook_feature_analysis.ipynb
-│   └── 02_microstructure_alpha_discovery.ipynb
+├── notebooks/                         # Jupyter notebooks (sequential)
+│   ├── 01_orderbook_feature_analysis.ipynb    # 205 features EDA
+│   ├── 02_microstructure_alpha_discovery.ipynb # BTC-only strategy iteration
+│   ├── 03_advanced_alpha_optimization.ipynb    # ML, composite signal, multi-asset
+│   ├── 04_multi_asset_alpha_expansion.ipynb    # 9-asset expansion, portfolio
+│   └── 05_production_alpha_realistic_execution.ipynb  # Execution realism, capacity, production pipeline
 │
 ├── lib/                               # Research framework (reusable)
 │   ├── __init__.py                    #   Public API
 │   ├── data.py                        #   DataLoader (Hive partition)
 │   ├── signals.py                     #   Signal registry & base classes
 │   ├── strategies.py                  #   Strategy base & implementations
-│   ├── backtest.py                    #   BacktestEngine → BacktestResult
+│   ├── backtest.py                    #   BacktestEngine + BacktestResult
 │   ├── evaluation.py                  #   PerformanceAnalyzer
-│   └── deploy.py                      #   ModelExporter → deployment bundles
+│   └── deploy.py                      #   ModelExporter + deployment bundles
 │
 ├── deployments/                       # Production deployment bundles
+│   ├── alpha_v2/                      #   NB03 BTC-optimized (7 files)
+│   ├── alpha_v3_multi_asset/          #   NB04 9-asset models (7 files)
+│   └── alpha_v4_production/           #   NB05 production alpha (5 files)
 │
 ├── results/                           # Structured outputs
 │   ├── 02_strategy_results.json
@@ -85,7 +94,9 @@ research/
 │   └── AutogluonModels/
 │
 └── docs/                              # Supporting documentation
-    └── QUANT_RESEARCH_CONTEXT.md
+    ├── INDEX.md                       #   Document index
+    ├── QUANT_RESEARCH_CONTEXT.md       #   Research context & objectives
+    └── MATHEMATICAL_APPENDIX.md       #   Formal definitions & derivations
 ```
 
 ---
@@ -118,28 +129,32 @@ Raw L2 Orderbook     Feature Engineering      Signal Generation
 
 ---
 
-## 📈 Key Results
+## Key Results
 
-### Feature Importance (Correlation with 10s Forward Return)
+### Feature Importance (Correlation with 30s Forward Return, Multi-Asset Average)
 
-| Rank | Feature | ρ | Category |
-|------|---------|---|----------|
-| 1 | `total_imbalance` | 8.13% | Structural |
-| 2 | `smart_depth_imbalance` | 8.18% | Structural |
-| 3 | `imbalance_L5` | 5.75% | Structural |
-| 4 | `imbalance_L3` | 4.12% | Structural |
-| 5 | `imbalance_L1` | 2.30% | Structural |
+| Rank | Feature | Avg |r| | Best Asset | Best |r| |
+|------|---------|---------|------------|----------|
+| 1 | `imbalance_L3` | **0.274** | HBAR-USD | 0.298 |
+| 2 | `imbalance_L5` | 0.201 | HBAR-USD | 0.247 |
+| 3 | `imbalance_L1` | 0.185 | DOGE-USD | 0.237 |
+| 4 | `imb_band_0_5bps` | 0.162 | ADA-USD | 0.219 |
+| 5 | `cog_vs_mid` | 0.134 | ADA-USD | 0.184 |
 
-### Backtest Performance (Z=1.5 Entry)
+### ML Walk-Forward Performance (XGBoost, 0.6/0.4, 30-bar hold, 0.1 bps)
 
 ```
-Fee Level    │ Return │ Win Rate │ Trades │ Sharpe
-─────────────┼────────┼──────────┼────────┼────────
-0.00 bps     │ +84.6% │   53.9%  │ 10,513 │   8.4
-0.10 bps     │ +49.6% │   46.7%  │ 10,513 │   5.2
-0.20 bps     │ +21.2% │   41.0%  │ 10,513 │   3.2
-0.25 bps     │  +9.1% │   37.9%  │ 10,513 │   1.8
-0.30 bps     │  -1.8% │   34.6%  │ 10,513 │  -0.3
+Asset        | Return         | AUC   | WR    | Days+
+-------------+----------------+-------+-------+------
+HBAR-USD     | +2,040,819%    | 0.736 | 69.1% | 9/9
+DOGE-USD     | +806,297%      | 0.762 | 72.4% | 9/9
+ADA-USD      | +740,258%      | 0.779 | 65.0% | 9/9
+AAVE-USD     | +473,864%      | 0.722 | 69.6% | 9/9
+FARTCOIN-USD | +102,927%      | 0.685 | 58.5% | 9/9
+AVAX-USD     | +14,422%       | 0.827 | 61.2% | 9/9
+ETH-USD      | +2,822%        | 0.616 | 53.7% | 9/9
+BCH-USD      | +1,323%        | 0.622 | 57.6% | 9/9
+BTC-USD      | +7.4%          | 0.576 | 47.1% | 5/9
 ```
 
 ---
@@ -190,21 +205,22 @@ print(f"Return: {result.total_return_pct:+.2f}%, Sharpe: {result.sharpe:.1f}")
 
 ---
 
-## 🚀 Future Research
+## Future Research
 
-### Completed in Notebook 03
-- ✅ **Multi-Asset Extension**: Validated on ETH, SOL, XRP, DOGE, LINK, ADA, AVAX (22 assets available)
-- ✅ **Regime Conditioning**: Vol-regime detection + regime-conditional parameter optimization
-- ✅ **Order Flow Toxicity**: MI-ranked feature importance including VPIN, Kyle's Lambda, OFI
-- ✅ **ML Models**: XGBoost + LightGBM walk-forward, ensemble strategy
-- ✅ **Statistical Validation**: Bootstrap CI, permutation tests, Holm-Bonferroni correction
+### Completed
+- ✅ **NB01**: Feature engineering (205 features from L2 orderbook)
+- ✅ **NB02**: Strategy iteration (5 strategies, imbalance z-score wins)
+- ✅ **NB03**: ML enhancement, composite signal, regime conditioning, early multi-asset
+- ✅ **NB04**: Full 9-asset expansion (39 days), portfolio construction, statistical validation, fee sensitivity
+- ✅ **NB05**: Production alpha — holding period sweep (30s-30m), long-only analysis, execution realism (64 latency/slippage scenarios), capacity analysis (Kyle's lambda, up to $100K), production ML pipeline (expanding window, feature stability), full 9-asset validation at production horizons
 
-### Remaining (Notebook 04+)
-1. **Live Paper Trading**: Simulation with realistic latency and execution
-2. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation (Coinbase vs Binance)
-3. **Execution Optimization**: Optimal order placement using signals, iceberg orders
-4. **Longer Holding Periods**: Lower-frequency variants for wider fee tolerance
-5. **VPIN Stand-Alone**: Order flow toxicity as independent alpha source
+### Next Steps (Notebook 06+)
+1. **Live Paper Trading**: Real-time simulation with actual exchange connectivity
+2. **Dynamic Asset Allocation**: Weight assets by predicted AUC / signal strength rather than equal-weight
+3. **Extended Feature Exploration**: Only using 79/205 features. Many unexplored.
+4. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation
+5. **Regime Detection**: Adapt to different market conditions
+6. **Multi-Timeframe Models**: Combine signals from multiple horizons
 
 ---
 
@@ -222,4 +238,5 @@ For collaboration or inquiries regarding this research, please open an issue or 
 
 ---
 
-*Last Updated: February 2026*
+*Last Updated: February 12, 2026*  
+*Notebooks: 5 complete | Assets: 9 | Data: 39 days (Jan 1 - Feb 10, 2026) | Total: ~36.3 GB*

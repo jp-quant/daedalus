@@ -14,6 +14,43 @@ This is a **permanent standing objective**. Every research session should advanc
 
 ---
 
+## Standing Directives
+
+These are permanent instructions that apply to EVERY research session:
+
+### 1. Documentation Updates (MANDATORY)
+
+After every research session, update ALL of the following docs to reflect new findings:
+
+| Document | Location | What to Update |
+|----------|----------|----------------|
+| `research/RESEARCH_PAPER.md` | Full technical paper | New sections, results, methodology |
+| `research/README.md` | Executive summary | Portfolio table, key results, next steps |
+| `research/QUANT_RESEARCH_AGENT_PROMPT.md` | This file | Prior findings, data inventory, priorities |
+| `research/docs/INDEX.md` | Document index | New notebooks, deployments, quick links |
+| `research/docs/QUANT_RESEARCH_CONTEXT.md` | Research context | Research log, findings, artifacts |
+| `research/docs/MATHEMATICAL_APPENDIX.md` | Math formulations | New metrics, tests, derivations |
+
+A new agent stepping into this project should be able to:
+- Read this prompt + all docs above
+- Review notebook outputs and deployment bundles
+- Immediately understand the full state of research
+- Pick up exactly where the last agent left off
+
+### 2. Dynamic Data Discovery
+
+Never hardcode dates or symbols. Always scan the filesystem at notebook start.
+
+### 3. Statistical Rigor
+
+Every alpha claim MUST pass the full validation checklist (see Research Workflow section).
+
+### 4. Deployment Bundles
+
+Every completed notebook exports a deployment bundle to `research/deployments/`.
+
+---
+
 ## Context: Solo Quant Trader
 
 | Parameter | Value |
@@ -47,9 +84,19 @@ c:\Users\longp\market-data-pipeline\
 │   │   ├── 01_orderbook_feature_analysis.ipynb
 │   │   ├── 02_microstructure_alpha_discovery.ipynb
 │   │   ├── 03_advanced_alpha_optimization.ipynb
-│   │   └── 04_multi_asset_alpha_expansion.ipynb   # (latest)
+│   ├── 04_multi_asset_alpha_expansion.ipynb
+│   └── 05_production_alpha_realistic_execution.ipynb  # (latest)
 │   ├── deployments/            # Production deployment bundles
-│   └── docs/                   # Research documentation
+│   │   ├── alpha_v2/           # NB03: BTC-optimized (7 files)
+│   │   ├── alpha_v3_multi_asset/  # NB04: 9-asset models (7 files)
+│   │   └── alpha_v4_production/   # NB05: production alpha (5 files)
+│   ├── docs/                   # Research documentation
+│   │   ├── INDEX.md            # Document index + quick links
+│   │   ├── QUANT_RESEARCH_CONTEXT.md  # Research context & log
+│   │   └── MATHEMATICAL_APPENDIX.md   # Formal math definitions
+│   ├── RESEARCH_PAPER.md       # Full technical paper
+│   ├── README.md               # Executive summary
+│   └── QUANT_RESEARCH_AGENT_PROMPT.md  # This file
 ├── data/processed/silver/orderbook/  # Feature data (Hive-partitioned Parquet)
 │   └── exchange=coinbaseadvanced/
 │       ├── symbol=BTC-USD/     # year=YYYY/month=M/day=D/hour=H/*.parquet
@@ -217,15 +264,17 @@ fee_table = engine.sweep_fees(prices, positions, fee_levels_bps=[0, 0.5, 1, 2, 5
 
 ---
 
-## Prior Research Findings (Notebooks 01-03)
+## Prior Research Findings (Notebooks 01-04)
 
 ### NB01: Feature Analysis (205 features)
 - Identified top predictive features from orderbook data
 - Feature correlation with forward returns at multiple horizons
+- Data: BTC-USD, 12 days
 
 ### NB02: Alpha Discovery
 - **Imbalance signal**: rho = 0.082 IC, breakeven at 0.27 bps
 - 5 strategies tested, imbalance z-score wins
+- Viable only for market makers (<0.27 bps fee)
 
 ### NB03: Advanced Optimization (COMPLETED)
 **WINNER: ML Only Strategy (XGBoost, 0.6/0.4 probability thresholds, 30-bar hold)**
@@ -238,7 +287,7 @@ fee_table = engine.sweep_fees(prices, positions, fee_levels_bps=[0, 0.5, 1, 2, 5
 - Features: `imbalance_L3`, `imbalance_L5`, `imbalance_L1`, `imb_band_0_5bps`, `imbalance_L10`, `cog_vs_mid`, `ofi_sum_5s`, `smart_depth_imbalance`
 - r = 0.114 with 30s forward returns (104% improvement over single feature)
 
-**Multi-Asset Alpha** (only 3 days data at that time):
+**Early Multi-Asset Discovery** (only 3 days data at that time):
 | Asset | Win Rate | Return (0.1 bps, 3d) |
 |-------|----------|----------------------|
 | SOL-USD | 72% | +383% |
@@ -246,9 +295,90 @@ fee_table = engine.sweep_fees(prices, positions, fee_levels_bps=[0, 0.5, 1, 2, 5
 | DOGE-USD | 65% | +68% |
 | BTC-USD | 37% | -31% |
 
-**Statistical Validation**: Permutation p=0.0000, Holm-Bonferroni 23/24 survive
-
 **Key Insight**: Mid-cap assets show dramatically stronger alpha than BTC.
+
+**Deployment**: `research/deployments/alpha_v2/` (7 files)
+
+### NB04: Multi-Asset Alpha Expansion (COMPLETED — LATEST)
+
+**Data**: 9 symbols x 39 days each (Jan 1 - Feb 10, 2026), ~36.3 GB total
+**Train/Test**: 30 train days / 9 test days
+
+**BREAKTHROUGH: `imbalance_L3` is the universal alpha king across ALL assets.**
+
+| Asset | Signal |r| | AUC | Return (0.1 bps) | Win Rate | Daily WR | Max Viable Fee |
+|-------|-----------|-----|-----------------|----------|----------|----------------|
+| HBAR-USD | **0.298** | 0.736 | +2,040,819% | 69.1% | 9/9 | >0.5 bps |
+| DOGE-USD | **0.267** | 0.762 | +806,297% | 72.4% | 9/9 | >0.5 bps |
+| ADA-USD | **0.282** | 0.779 | +740,258% | 65.0% | 9/9 | >0.5 bps |
+| AAVE-USD | **0.223** | 0.722 | +473,864% | 69.6% | 9/9 | >0.5 bps |
+| FARTCOIN-USD | **0.265** | 0.685 | +102,927% | 58.5% | 9/9 | >0.5 bps |
+| AVAX-USD | **0.225** | 0.827 | +14,422% | 61.2% | 9/9 | >0.5 bps |
+| ETH-USD | 0.109 | 0.616 | +2,822% | 53.7% | 9/9 | 0.49 bps |
+| BCH-USD | 0.076 | 0.622 | +1,323% | 57.6% | 9/9 | >0.5 bps |
+| BTC-USD | 0.064 | 0.576 | +7.4% | 47.1% | 5/9 | 0.11 bps |
+
+**Portfolio**: Equal-weight 9 assets: **+99,201% total, 9/9 days profitable, avg daily +152.11%**
+
+**Statistical Validation**:
+- Permutation test: 8/9 significant (p < 0.005). BTC p=0.383 (rejected).
+- Bootstrap CI: 8/8 altcoins P(>0) = 100%
+- Holm-Bonferroni: All 8 altcoins survive correction
+
+**Cross-Asset Transfer**: Models transfer across assets (AUC >0.5) but asset-specific models are consistently superior.
+
+**Fee Sensitivity**: ALL 7 altcoins profitable at ALL tested fee levels (0 to 0.5 bps). BTC breakeven = 0.11 bps. ETH breakeven = 0.49 bps.
+
+**NOTE on extreme compound returns**: These assume full capital compounding at ~3,000+ trades/day over 9 days. Real position sizing reduces absolute returns, but the *consistency* (100% daily win rates, P(>0)=100%) is the key finding.
+
+**Deployment**: `research/deployments/alpha_v3_multi_asset/` (7 files: config.json, ml_results_by_asset.csv, feature_importance_by_asset.csv, fee_sensitivity.csv, portfolio_daily.csv, signal_correlations_by_asset.csv, per_asset_features.json)
+
+### NB05: Production Alpha — Realistic Execution (COMPLETED — LATEST)
+
+**Focus**: Longer holding periods (30s-30m), long-only constraints, execution realism, capacity analysis, production ML pipeline validation.
+
+**Holding Period Sweep** (7 horizons × 4 focus assets, L+S, 0.1 bps):
+| Horizon | Avg Return | AUC | Trades/Day |
+|---------|-----------|-----|-----------|
+| 30s | +174,671% | ~0.75 | ~3,000 |
+| 1m | +15,419% | ~0.70 | ~1,500 |
+| 2m | +2,341% | ~0.65 | ~700 |
+| 5m | +260% | ~0.58 | ~250 |
+| 10m | +77% | ~0.55 | ~100 |
+| 15m | +26% | ~0.53 | ~60 |
+| 30m | +13% | ~0.52 | ~30 |
+
+**Long-Only Analysis**: Captures ~38.7% of L+S alpha. Retention INCREASES at longer horizons (20% at 30s → 55% at 2m). Win rates higher than L+S.
+
+**Fee Sensitivity (Long-Only)**: All 12 configs (3 horizons × 4 assets) profitable at 0.5 bps. Breakeven >0.5 bps everywhere.
+
+**Execution Realism**: 64 scenarios (4 latency levels × 4 slippage levels × 2 assets × 2 horizons). ALL PROFITABLE. Worst case (5-bar latency + 0.20 bps slippage): +232% min.
+
+**Capacity**: Kyle's lambda analysis. HBAR/DOGE/ADA have ~0 market impact. AAVE: 0.034 bps at $100K. All profitable up to $100K positions.
+
+**Production ML Pipeline**: Expanding window daily retraining.
+- AUC matches fixed-window (±0.001)
+- Feature stability: `imbalance_L3`, `micro_minus_mid`, `imbalance_L1` stable 100% across all retrains
+- Top-1 feature consistency: 9/9 days at 30s, 5-9/9 at 2m
+
+**Full 9-Asset Validation (Long-Only, 0.1 bps)**:
+| Asset | 1m Return | 2m Return | 1m Days+ | 2m Days+ |
+|-------|-----------|-----------|----------|----------|
+| HBAR-USD | +7,288% | +1,552% | 9/9 | 8/9 |
+| DOGE-USD | +7,395% | +1,357% | 9/9 | 8/9 |
+| ADA-USD | +7,437% | +1,464% | 9/9 | 8/9 |
+| AAVE-USD | +3,126% | +798% | 9/9 | 8/9 |
+| FARTCOIN | +2,323% | +735% | 9/9 | 8/9 |
+| AVAX-USD | +2,183% | +744% | 8/9 | 8/9 |
+| ETH-USD | +1,376% | +335% | 8/9 | 8/9 |
+| BCH-USD | +231% | +135% | 8/9 | 8/9 |
+| BTC-USD | +133% | +86% | 7/9 | 7/9 |
+
+**Portfolio**: EW 9-asset: +2,310% at 1m (9/9 days), +650% at 2m (8/9 days)
+
+**Key Insight**: 1m-2m horizons offer best production trade-off: lower frequency, wider fee tolerance, higher long-only retention, stable features under daily retraining.
+
+**Deployment**: `research/deployments/alpha_v4_production/` (5 files: config.json, features.json, capacity_analysis.csv, full_validation.json, results_summary.json)
 
 ---
 
@@ -313,24 +443,40 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 
 ## How to Continue Research
 
-### Immediate Priorities
-1. **Multi-asset ML walk-forward** with 39 days (proper train/test split)
-2. **Per-asset signal profiling** across all 9 symbols
-3. **Cross-asset signal transfer** (train BTC, test alts)
-4. **Portfolio construction** (multi-asset allocation)
-5. **Extended feature exploration** (205 cols vs old 56)
+### What Has Been Completed (NB01-05)
+- [x] Feature engineering (205 features from L2 orderbook)
+- [x] Strategy iteration (5 strategies tested on BTC-only)
+- [x] ML enhancement (XGBoost, composite signal, 100% daily WR)
+- [x] Multi-asset expansion (9 assets, 39 days each)
+- [x] Per-asset signal profiling (imbalance_L3 = universal king)
+- [x] Cross-asset signal transfer analysis
+- [x] Portfolio construction (equal-weight, 9/9 profitable days)
+- [x] Full statistical validation (permutation, bootstrap, Holm-Bonferroni)
+- [x] Fee sensitivity across 7 levels (all altcoins viable up to 0.5 bps)
+- [x] Deployment bundles exported (alpha_v2, alpha_v3_multi_asset, alpha_v4_production)
+- [x] Holding period sweep (30s to 30m, 7 horizons)
+- [x] Long-only constraint analysis (38.7% alpha retention)
+- [x] Execution realism (64 latency/slippage scenarios, all profitable)
+- [x] Capacity analysis (Kyle's lambda, $100K positions feasible)
+- [x] Production ML pipeline (expanding window, feature stability validated)
+- [x] Full 9-asset validation at production horizons (1m, 2m, long-only)
 
-### Suggested Train/Test Split
-- **Train**: Jan 1 - Jan 31 (29 days, gap Jan 10-11)
-- **Test (OOS)**: Feb 1 - Feb 10 (10 days) — TRUE out-of-sample
-- This gives 3:1 train:test ratio across all 9 assets
+### Immediate Priorities (Notebook 06+)
+1. **Live Paper Trading**: Real-time simulation with actual exchange connectivity and latency measurement
+2. **Dynamic Asset Allocation**: Weight assets by predicted AUC / signal strength rather than equal-weight
+3. **Extended Feature Exploration**: Only using 79/205 features. Many unexplored (trade flow, spread dynamics)
+4. **Multi-Timeframe Models**: Combine signals from multiple horizons (30s + 1m + 2m ensemble)
+5. **Regime Detection**: Adapt strategy to different market conditions (trending vs mean-reverting)
 
 ### Long-Term Roadmap
-- Live paper trading simulation with realistic latency
 - Cross-exchange arbitrage (Coinbase vs Binance)
-- VPIN as standalone strategy
-- Production ML pipeline with daily retraining
+- VPIN / order flow toxicity as standalone strategy
 - Multi-asset portfolio optimization with risk budgets
+- Regime-conditional model switching
+- Intraday seasonality exploitation
+
+### Key Actionable Trading Insight
+**Focus on HBAR, DOGE, ADA, AAVE** — these are the top-4 most profitable assets with strongest signals. Do NOT trade BTC with this strategy (fails statistical validation). Consider dropping BTC from the portfolio entirely.
 
 ---
 

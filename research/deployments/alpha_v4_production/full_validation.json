@@ -1,0 +1,74 @@
+{
+  "AAVE-USD": {
+    "total_return": 3126.37630058691,
+    "avg_auc": 0.6696143283820208,
+    "avg_wr": 0.7376043995090039,
+    "pos_days": 9,
+    "total_days": 9,
+    "trades_per_day": 995.1111111111111
+  },
+  "ADA-USD": {
+    "total_return": 7437.157749816295,
+    "avg_auc": 0.7174907403472529,
+    "avg_wr": 0.7153160296221931,
+    "pos_days": 9,
+    "total_days": 9,
+    "trades_per_day": 1142.3333333333333
+  },
+  "AVAX-USD": {
+    "total_return": 2182.481646255477,
+    "avg_auc": 0.7826283825450111,
+    "avg_wr": 0.6529486028163308,
+    "pos_days": 8,
+    "total_days": 9,
+    "trades_per_day": 448.6666666666667
+  },
+  "BCH-USD": {
+    "total_return": 231.33146711947546,
+    "avg_auc": 0.6117110557572736,
+    "avg_wr": 0.6501127902372105,
+    "pos_days": 8,
+    "total_days": 9,
+    "trades_per_day": 637.8888888888889
+  },
+  "BTC-USD": {
+    "total_return": 133.21798805534416,
+    "avg_auc": 0.5932768414997542,
+    "avg_wr": 0.5707232654492658,
+    "pos_days": 7,
+    "total_days": 9,
+    "trades_per_day": 2444.777777777778
+  },
+  "DOGE-USD": {
+    "total_return": 7394.662660134857,
+    "avg_auc": 0.7110259508057539,
+    "avg_wr": 0.7620201781742729,
+    "pos_days": 9,
+    "total_days": 9,
+    "trades_per_day": 1498.7777777777778
+  },
+  "ETH-USD": {
+    "total_return": 1376.0774620828222,
+    "avg_auc": 0.6337633508785845,
+    "avg_wr": 0.631058782546237,
+    "pos_days": 8,
+    "total_days": 9,
+    "trades_per_day": 2301.8888888888887
+  },
+  "FARTCOIN-USD": {
+    "total_return": 2323.0510067580603,
+    "avg_auc": 0.6493911511910035,
+    "avg_wr": 0.6800041062170546,
+    "pos_days": 9,
+    "total_days": 9,
+    "trades_per_day": 499.77777777777777
+  },
+  "HBAR-USD": {
+    "total_return": 7287.615097309188,
+    "avg_auc": 0.6816473635178912,
+    "avg_wr": 0.7315839524188865,
+    "pos_days": 9,
+    "total_days": 9,
+    "trades_per_day": 1277.3333333333333
+  }
+}

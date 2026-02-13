@@ -1,0 +1,227 @@
+{
+  "horizon_sweep": {
+    "30s": {
+      "HBAR-USD": 268476.0605719025,
+      "DOGE-USD": 174730.51850753484,
+      "ADA-USD": 147083.85275422753,
+      "AAVE-USD": 108395.25533732501
+    },
+    "1m": {
+      "HBAR-USD": 21277.231030683386,
+      "DOGE-USD": 16433.50829798916,
+      "ADA-USD": 12526.224413404901,
+      "AAVE-USD": 11438.273795982765
+    },
+    "2m": {
+      "HBAR-USD": 2898.059737492018,
+      "DOGE-USD": 2330.8622341044043,
+      "ADA-USD": 2158.7633238483836,
+      "AAVE-USD": 1976.6111495495622
+    },
+    "5m": {
+      "HBAR-USD": 437.5306885669681,
+      "DOGE-USD": 210.29503342867463,
+      "ADA-USD": 93.89454262092052,
+      "AAVE-USD": 298.19591040380567
+    },
+    "10m": {
+      "HBAR-USD": 87.11452342314962,
+      "DOGE-USD": 42.917568039702836,
+      "ADA-USD": 88.01867649265733,
+      "AAVE-USD": 90.35899823217648
+    },
+    "15m": {
+      "HBAR-USD": 40.49376190967695,
+      "DOGE-USD": 7.647605842687333,
+      "ADA-USD": 35.651440007721135,
+      "AAVE-USD": 19.279070951241728
+    },
+    "30m": {
+      "HBAR-USD": 38.68840856403726,
+      "DOGE-USD": 7.947446928272939,
+      "ADA-USD": 8.620420583293953,
+      "AAVE-USD": -3.9502533756863745
+    }
+  },
+  "long_only_retention": [
+    {
+      "horizon": "30s",
+      "symbol": "HBAR-USD",
+      "long_short_ret": 268476.0605719025,
+      "long_only_ret": 41832.610306926785,
+      "retention_pct": 15.581504815668023
+    },
+    {
+      "horizon": "30s",
+      "symbol": "DOGE-USD",
+      "long_short_ret": 174730.51850753484,
+      "long_only_ret": 34261.852544032954,
+      "retention_pct": 19.608396310319133
+    },
+    {
+      "horizon": "30s",
+      "symbol": "ADA-USD",
+      "long_short_ret": 147083.85275422753,
+      "long_only_ret": 49481.828780166165,
+      "retention_pct": 33.64191775887782
+    },
+    {
+      "horizon": "30s",
+      "symbol": "AAVE-USD",
+      "long_short_ret": 108395.25533732501,
+      "long_only_ret": 10251.647831457634,
+      "retention_pct": 9.45765365795265
+    },
+    {
+      "horizon": "1m",
+      "symbol": "HBAR-USD",
+      "long_short_ret": 21277.231030683386,
+      "long_only_ret": 7287.615097309188,
+      "retention_pct": 34.25076828277088
+    },
+    {
+      "horizon": "1m",
+      "symbol": "DOGE-USD",
+      "long_short_ret": 16433.50829798916,
+      "long_only_ret": 7394.662660134857,
+      "retention_pct": 44.997468136731854
+    },
+    {
+      "horizon": "1m",
+      "symbol": "ADA-USD",
+      "long_short_ret": 12526.224413404901,
+      "long_only_ret": 7437.157749816295,
+      "retention_pct": 59.372700858348374
+    },
+    {
+      "horizon": "1m",
+      "symbol": "AAVE-USD",
+      "long_short_ret": 11438.273795982765,
+      "long_only_ret": 3126.37630058691,
+      "retention_pct": 27.332588433797806
+    },
+    {
+      "horizon": "2m",
+      "symbol": "HBAR-USD",
+      "long_short_ret": 2898.059737492018,
+      "long_only_ret": 1551.6210934097228,
+      "retention_pct": 53.539996892972816
+    },
+    {
+      "horizon": "2m",
+      "symbol": "DOGE-USD",
+      "long_short_ret": 2330.8622341044043,
+      "long_only_ret": 1356.8905661906954,
+      "retention_pct": 58.21410404858434
+    },
+    {
+      "horizon": "2m",
+      "symbol": "ADA-USD",
+      "long_short_ret": 2158.7633238483836,
+      "long_only_ret": 1463.7397796292444,
+      "retention_pct": 67.80455103433317
+    },
+    {
+      "horizon": "2m",
+      "symbol": "AAVE-USD",
+      "long_short_ret": 1976.6111495495622,
+      "long_only_ret": 797.9852267777725,
+      "retention_pct": 40.37138144038196
+    }
+  ],
+  "fee_breakeven": [
+    {
+      "horizon": "30s",
+      "symbol": "HBAR-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 60680.05421048631,
+      "ret_0.5bps": 9399.462646840555
+    },
+    {
+      "horizon": "30s",
+      "symbol": "DOGE-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 50912.80859925699,
+      "ret_0.5bps": 6973.734427016072
+    },
+    {
+      "horizon": "30s",
+      "symbol": "ADA-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 66044.45046589289,
+      "ret_0.5bps": 15554.043671989268
+    },
+    {
+      "horizon": "30s",
+      "symbol": "AAVE-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 13655.07713850973,
+      "ret_0.5bps": 3220.3432200776397
+    },
+    {
+      "horizon": "1m",
+      "symbol": "HBAR-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 9196.620120870635,
+      "ret_0.5bps": 2845.8523772570516
+    },
+    {
+      "horizon": "1m",
+      "symbol": "DOGE-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 9714.949868072508,
+      "ret_0.5bps": 2447.9822243258664
+    },
+    {
+      "horizon": "1m",
+      "symbol": "ADA-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 9157.194121240702,
+      "ret_0.5bps": 3212.1623477903177
+    },
+    {
+      "horizon": "1m",
+      "symbol": "AAVE-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 3758.9460109381007,
+      "ret_0.5bps": 1476.4946822262605
+    },
+    {
+      "horizon": "2m",
+      "symbol": "HBAR-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 1797.2940235583596,
+      "ret_0.5bps": 848.4349023975428
+    },
+    {
+      "horizon": "2m",
+      "symbol": "DOGE-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 1637.2907659686039,
+      "ret_0.5bps": 620.5049466146471
+    },
+    {
+      "horizon": "2m",
+      "symbol": "ADA-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 1664.4027588204335,
+      "ret_0.5bps": 864.7754998601416
+    },
+    {
+      "horizon": "2m",
+      "symbol": "AAVE-USD",
+      "breakeven_bps": ">0.5",
+      "ret_0bps": 895.4961743126053,
+      "ret_0.5bps": 494.5427695843566
+    }
+  ],
+  "best_horizons": [
+    "30s",
+    "1m",
+    "2m"
+  ],
+  "production_horizons": [
+    "1m",
+    "2m"
+  ]
+}
