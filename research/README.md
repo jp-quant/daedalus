@@ -77,6 +77,7 @@ research/
 │   ├── strategies.py                  #   Strategy base & implementations
 │   ├── backtest.py                    #   BacktestEngine + BacktestResult
 │   ├── evaluation.py                  #   PerformanceAnalyzer
+│   ├── reporting.py                   #   PerformanceReport + StrategyComparison
 │   └── deploy.py                      #   ModelExporter + deployment bundles
 │
 ├── deployments/                       # Production deployment bundles
@@ -172,7 +173,14 @@ DataLoader ──► BaseSignal ──► BaseStrategy ──► BacktestEngine 
             ForwardReturn     MeanReversion        sweep_param()   correlation_matrix()
             PriceZScore       Regression           run_strategy()  fee_sensitivity()
             Percentile        Direction                                 │
-            OptimalTrade      UltraSelective                     ModelExporter
+            OptimalTrade      UltraSelective                   PerformanceReport
+                                                              StrategyComparison
+                                                              → Interactive Plotly dashboards
+                                                              → Equity curves, drawdown
+                                                              → Trade analysis, P&L scatter
+                                                              → Rolling metrics, fee analysis
+                                                                       │
+                                                                 ModelExporter
                                                                   → deployment bundle
 ```
 
@@ -213,6 +221,7 @@ print(f"Return: {result.total_return_pct:+.2f}%, Sharpe: {result.sharpe:.1f}")
 - ✅ **NB03**: ML enhancement, composite signal, regime conditioning, early multi-asset
 - ✅ **NB04**: Full 9-asset expansion (39 days), portfolio construction, statistical validation, fee sensitivity
 - ✅ **NB05**: Production alpha — holding period sweep (30s-30m), long-only analysis, execution realism (64 latency/slippage scenarios), capacity analysis (Kyle's lambda, up to $100K), production ML pipeline (expanding window, feature stability), full 9-asset validation at production horizons
+- ✅ **Reporting Framework**: `research/lib/reporting.py` — comprehensive portfolio & strategy performance reporting with interactive Plotly dashboards (equity curves, drawdown, trade analysis, rolling metrics, fee analysis, strategy comparison). Exports to CSV/JSON. Validated on HBAR-USD (+161%, 3,073 trades) and DOGE-USD (+149%, 3,322 trades) over 3 OOS days.
 
 ### Next Steps (Notebook 06+)
 1. **Live Paper Trading**: Real-time simulation with actual exchange connectivity
@@ -221,6 +230,7 @@ print(f"Return: {result.total_return_pct:+.2f}%, Sharpe: {result.sharpe:.1f}")
 4. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation
 5. **Regime Detection**: Adapt to different market conditions
 6. **Multi-Timeframe Models**: Combine signals from multiple horizons
+7. **MLOps Pipeline**: mlflow model registry, experiment tracking, automated retraining pipeline, feature store
 
 ---
 

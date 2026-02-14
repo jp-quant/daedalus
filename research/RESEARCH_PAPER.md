@@ -703,7 +703,7 @@ All code and data processing pipelines are available in the accompanying Jupyter
 2. `02_microstructure_alpha_discovery.ipynb` - Strategy development and backtesting (BTC-only)
 3. `03_advanced_alpha_optimization.ipynb` - ML enhancement, composite signal, multi-asset discovery
 4. `04_multi_asset_alpha_expansion.ipynb` - Full 9-asset expansion, portfolio, statistical validation
-5. `05_production_alpha_realistic_execution.ipynb` - Holding period sweep, long-only, execution realism, capacity, production pipeline
+5. `05_production_alpha_realistic_execution.ipynb` - Holding period sweep, long-only, execution realism, capacity, production pipeline, **reporting framework (Part 8)**
 
 Deployment bundles:
 - `research/deployments/alpha_v2/` - NB03 BTC-optimized models (7 files)
@@ -742,6 +742,44 @@ data/processed/silver/orderbook/
 | `cog_vs_mid` | Moderate | 0/9 |
 | `smart_depth_imbalance` | Weak | 0/9 |
 
+## Appendix E: Reporting & Analytics Framework
+
+A comprehensive portfolio and strategy performance reporting module (`research/lib/reporting.py`) was built to standardize all strategy evaluation. This ensures consistency, reproducibility, and rich interactive visualization across all research.
+
+### E.1 Architecture
+
+The reporting framework is strategy-agnostic. It takes standardized DataFrames (trades, equity curves, positions) and produces:
+
+- **25+ performance metrics**: Total return, Sharpe, Sortino, Calmar, max drawdown (abs + %), DD duration, win rate, profit factor, avg/median return, best/worst trade, consecutive wins/losses, long/short breakdown, return distribution (skew, kurtosis), total fees, daily P&L stats.
+- **7 interactive Plotly dashboards**: Equity + drawdown overlay, trade P&L scatter + distribution, cumulative P&L, rolling win rate & avg return, fee analysis (gross vs net), daily returns bar chart, multi-strategy equity comparison.
+- **Export**: Metrics JSON + trades/equity CSV per strategy evaluation.
+
+### E.2 Key Classes
+
+| Class | Purpose |
+|-------|---------|
+| `PerformanceReport` | Main analytics engine. Factory methods: `from_trades()`, `from_backtest_result()`, `combine()` |
+| `StrategyComparison` | Side-by-side comparison of multiple strategies. `comparison_table()`, `plot_equity_comparison()` |
+
+### E.3 Validated Results
+
+| Asset | Return | Trades | Win Rate | Sharpe | Profit Factor | Max DD | Daily WR |
+|-------|--------|--------|----------|--------|---------------|--------|----------|
+| HBAR-USD ML@1m | +161.05% | 3,073 | 64.0% | 1.16 | 2.51 | -3.43% | 100% (3/3) |
+| DOGE-USD ML@1m | +149.07% | 3,322 | 67.8% | 1.01 | 2.28 | -5.89% | 100% (3/3) |
+
+Report artifacts exported to `research/reports/` (trades.csv, equity.csv, metrics.json, strategy_comparison.csv).
+
+### E.4 MLOps Roadmap (Not Yet Built)
+
+Future work items noted for production ML pipeline:
+- **mlflow**: Experiment tracking, model versioning, metric logging
+- **Model Registry**: Centralized model management, staging/production promotion
+- **Feature Store**: Versioned feature definitions, online/offline serving
+- **Automated Retraining**: Daily expanding-window pipeline with monitoring
+- **Model Monitoring**: Drift detection, performance degradation alerts
+- **A/B Testing**: Controlled rollout of model updates
+
 ---
 
 ## References
@@ -767,4 +805,4 @@ data/processed/silver/orderbook/
 *Data period: January 1 - February 10, 2026*  
 *Assets: 9 cryptocurrency pairs on Coinbase Advanced*  
 *Total data: ~36.3 GB across 39 trading days per asset*  
-*Notebooks: 5 complete (NB01-05)*
+*Notebooks: 5 complete (NB01-05) + Reporting Framework*

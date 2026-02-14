@@ -153,6 +153,10 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 | **2026-02-12** | **NB05** | **Capacity: $100K positions feasible. Kyle's λ ≈ 0 for HBAR/DOGE/ADA** | **NB05** |
 | **2026-02-12** | **NB05** | **Production pipeline: Expanding window, 100% feature stability, daily retrain OK** | **NB05** |
 | **2026-02-12** | **NB05** | **9-asset portfolio: +2,310% (1m), +650% (2m), long-only, 0.1 bps** | **NB05** |
+| **2026-02-12** | **Reporting** | **Built `research/lib/reporting.py`: PerformanceReport + StrategyComparison** | **NB05 Part 8** |
+| **2026-02-12** | **Reporting** | **Interactive Plotly dashboards: equity+DD, trades, rolling metrics, fees, comparison** | **NB05 Part 8** |
+| **2026-02-12** | **Reporting** | **Validated: HBAR +161% (PF 2.51, DD -3.43%), DOGE +149% (PF 2.28, DD -5.89%)** | **NB05 Part 8** |
+| **2026-02-12** | **Reporting** | **Reports exported to `research/reports/` (trades.csv, equity.csv, metrics.json)** | **NB05 Part 8** |
 
 ### Key Strategic Insight (NB05)
 
@@ -167,7 +171,7 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 - `research/notebooks/02_microstructure_alpha_discovery.ipynb` - COMPLETE
 - `research/notebooks/03_advanced_alpha_optimization.ipynb` - COMPLETE (42 cells)
 - `research/notebooks/04_multi_asset_alpha_expansion.ipynb` - COMPLETE (27 cells, 19 code)
-- `research/notebooks/05_production_alpha_realistic_execution.ipynb` - COMPLETE (29 cells, 20 code)
+- `research/notebooks/05_production_alpha_realistic_execution.ipynb` - COMPLETE (37 cells, 28 code) — includes Part 8: Reporting Framework
 
 ### Deployment Bundles
 - `research/deployments/alpha_v2/` - NB03 BTC-optimized (7 files)
@@ -184,6 +188,21 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 - `research/results/feature_correlations.csv`
 - `research/results/backtest_results.csv`
 - `research/results/threshold_analysis.csv`
+
+### Report Artifacts (from `research/lib/reporting.py`)
+- `research/reports/hbar_usd/` — trades.csv, equity.csv, metrics.json
+- `research/reports/doge_usd/` — trades.csv, equity.csv, metrics.json
+- `research/reports/combined_summary.json` — All strategies combined
+- `research/reports/strategy_comparison.csv` — Side-by-side comparison table
+
+### Research Framework (`research/lib/`)
+- `data.py` — DataLoader (Hive-partitioned Parquet)
+- `signals.py` — Signal classes (ImbalanceSignal, ForwardReturnSignal, etc.)
+- `strategies.py` — Strategy classes (Direction, Regression, Imbalance, etc.)
+- `backtest.py` — BacktestEngine + BacktestResult + TradeLog
+- `evaluation.py` — PerformanceAnalyzer
+- `reporting.py` — **NEW** PerformanceReport + StrategyComparison (Plotly interactive dashboards)
+- `deploy.py` — ModelExporter
 
 ---
 

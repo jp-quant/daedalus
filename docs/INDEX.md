@@ -65,6 +65,17 @@ This document provides a map of all documentation and quick access to key inform
 |----------|---------|-----------|
 | [`US_CRYPTO_STRATEGY.md`](US_CRYPTO_STRATEGY.md) | US regulatory considerations | Planning US-based trading |
 
+### Quantitative Research
+
+| Document | Purpose | Read When |
+|----------|---------|-----------|
+| [`../research/RESEARCH_PAPER.md`](../research/RESEARCH_PAPER.md) | Full technical paper (Sections 1-9 + Appendices A-E) | Deep dive into methodology & results |
+| [`../research/README.md`](../research/README.md) | Research executive summary | Quick overview of findings |
+| [`../research/QUANT_RESEARCH_AGENT_PROMPT.md`](../research/QUANT_RESEARCH_AGENT_PROMPT.md) | Agent onboarding prompt | Starting a new research agent session |
+| [`../research/lib/reporting.py`](../research/lib/reporting.py) | **NEW** Performance reporting framework | Evaluating any strategy/portfolio |
+| [`../research/docs/QUANT_RESEARCH_CONTEXT.md`](../research/docs/QUANT_RESEARCH_CONTEXT.md) | Research context & log | Understanding research history |
+| [`../research/docs/MATHEMATICAL_APPENDIX.md`](../research/docs/MATHEMATICAL_APPENDIX.md) | Formal math definitions | Understanding metric formulations |
+
 ---
 
 ## 🔑 Critical Code Locations

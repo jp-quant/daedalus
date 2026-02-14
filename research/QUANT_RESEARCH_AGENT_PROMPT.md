@@ -79,6 +79,7 @@ c:\Users\longp\market-data-pipeline\
 │   │   ├── strategies.py       # Strategy classes (Direction, Regression, etc.)
 │   │   ├── backtest.py         # BacktestEngine + BacktestResult
 │   │   ├── evaluation.py       # PerformanceAnalyzer
+│   │   ├── reporting.py        # PerformanceReport + StrategyComparison (Plotly dashboards)
 │   │   └── deploy.py           # ModelExporter
 │   ├── notebooks/              # Research notebooks (sequential)
 │   │   ├── 01_orderbook_feature_analysis.ipynb
@@ -460,6 +461,8 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 - [x] Capacity analysis (Kyle's lambda, $100K positions feasible)
 - [x] Production ML pipeline (expanding window, feature stability validated)
 - [x] Full 9-asset validation at production horizons (1m, 2m, long-only)
+- [x] **Reporting Framework** (`research/lib/reporting.py`): PerformanceReport, StrategyComparison classes with interactive Plotly dashboards (equity curves, drawdown overlay, trade P&L scatter, return distribution, rolling win rate, cumulative P&L, fee analysis, daily returns, strategy comparison). Supports `from_backtest_result()` adapter, `combine()` across days, `save()` to CSV/JSON. Validated on HBAR-USD (+161%, WR 64.0%, PF 2.51, DD -3.43%) and DOGE-USD (+149%, WR 67.8%, PF 2.28, DD -5.89%) over 3 OOS days.
+- [x] Report artifacts exported to `research/reports/` (trades.csv, equity.csv, metrics.json, strategy_comparison.csv)
 
 ### Immediate Priorities (Notebook 06+)
 1. **Live Paper Trading**: Real-time simulation with actual exchange connectivity and latency measurement
@@ -467,6 +470,7 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 3. **Extended Feature Exploration**: Only using 79/205 features. Many unexplored (trade flow, spread dynamics)
 4. **Multi-Timeframe Models**: Combine signals from multiple horizons (30s + 1m + 2m ensemble)
 5. **Regime Detection**: Adapt strategy to different market conditions (trending vs mean-reverting)
+6. **MLOps Pipeline** (scaffolding noted, not yet built): mlflow experiment tracking, model registry, feature store, automated daily retraining pipeline, model performance monitoring, A/B testing framework
 
 ### Long-Term Roadmap
 - Cross-exchange arbitrage (Coinbase vs Binance)
@@ -474,6 +478,42 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 - Multi-asset portfolio optimization with risk budgets
 - Regime-conditional model switching
 - Intraday seasonality exploitation
+- MLOps: mlflow, model registry, feature store, automated retraining
+
+### Reporting Framework (`research/lib/reporting.py`)
+
+The canonical reporting module for ALL strategy evaluation. Every backtest should be analyzed through this framework for consistency.
+
+```python
+from research.lib.reporting import PerformanceReport, StrategyComparison
+
+# From BacktestResult (bridge from existing engine)
+report = PerformanceReport.from_backtest_result(result, prices, symbol='HBAR-USD', fee_bps=0.1, date='2026-02-02')
+
+# Combine multiple days
+combined = PerformanceReport.combine({'day1': rpt1, 'day2': rpt2}, strategy_name='ML@1m')
+
+# Full analytics
+report.print_summary()           # Pretty-printed metrics (Sharpe, Sortino, Calmar, DD, PF, etc.)
+report.plot_equity()             # Interactive equity curve + drawdown overlay
+report.plot_trades()             # P&L scatter, distribution, cumulative P&L, holding period analysis
+report.plot_returns()            # Rolling win rate, rolling avg return
+report.plot_fee_analysis()       # Gross vs net P&L + cumulative fees
+report.plot_daily_returns()      # Daily P&L bar chart
+report.full_dashboard()          # All-in-one: summary + all plots
+report.save('path/to/output/')   # Export metrics.json + trades.csv + equity.csv
+
+# Multi-strategy comparison
+comp = StrategyComparison()
+comp.add('HBAR', report_hbar)
+comp.add('DOGE', report_doge)
+comp.comparison_table()          # Side-by-side DataFrame
+comp.plot_equity_comparison()    # Normalized equity overlay
+```
+
+**Metrics computed**: Total return, Sharpe, Sortino, Calmar, max drawdown (abs + %), DD duration, win rate, profit factor, avg/median return, best/worst trade, consecutive wins/losses, long/short breakdown, return skew/kurtosis, total fees, daily P&L, and more.
+
+**Visualization**: Plotly interactive (preferred), matplotlib fallback.
 
 ### Key Actionable Trading Insight
 **Focus on HBAR, DOGE, ADA, AAVE** — these are the top-4 most profitable assets with strongest signals. Do NOT trade BTC with this strategy (fails statistical validation). Consider dropping BTC from the portfolio entirely.
