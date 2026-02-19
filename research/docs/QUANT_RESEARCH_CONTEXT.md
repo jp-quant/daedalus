@@ -43,10 +43,15 @@
    - **STATUS: ACHIEVED** — Kyle's lambda analysis confirms $100K positions feasible with negligible market impact (NB05)
 
 6. **Dynamic Allocation**: Weight by signal strength / AUC
+   - **STATUS: ACHIEVED** — Momentum weighting (+1,190,717%), AUC-weighted, and inverse-vol all tested (NB06). All maintain 9/9 profitable days.
 7. **Live Paper Trading**: Validate latency assumptions
    - **STATUS: PARTIALLY ACHIEVED** — Execution realism simulation shows all 64 latency/slippage scenarios profitable (NB05). Real-time paper trading pending.
 8. **Production Pipeline**: Daily retraining + automated execution
    - **STATUS: ACHIEVED** — Expanding window daily retraining validated with 100% feature stability for core features (NB05)
+9. **Extended Feature Exploration**: Expand beyond 72 PROD features
+   - **STATUS: ACHIEVED** — 111 features screened → 19 new + 13 engineered = 104 FULL features (NB06). Portfolio improved 15.4x.
+10. **Multi-Timeframe Ensemble**: Combine signals from multiple horizons
+    - **STATUS: ACHIEVED** — 30s/1m/2m ensemble tested (NB06). 30s dominates; ensembles don't beat single-best horizon.
 
 ---
 
@@ -122,15 +127,16 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 
 ### Results Summary
 
-| Metric | BTC (NB03) | 8 Altcoins (NB04) | Portfolio (NB04) | Long-Only 1m (NB05) | Long-Only 2m (NB05) |
-|--------|------------|-------------------|-----------------|---------------------|---------------------|
-| OOS Days | 12 | 9 | 9 | 9 | 9 |
-| Daily Win Rate | 100% (12/12) | 100% (9/9 each) | 100% (9/9) | 100% (9/9) | 89% (8/9) |
-| Trade Win Rate | 54.9% | 53.7%-72.4% | N/A | 57.1%-76.2% | 56.3%-68.4% |
-| AUC | 0.748 | 0.616-0.827 | N/A | 0.593-0.783 | 0.560-0.706 |
-| Return (0.1 bps) | +161.4% | +1,323% to +2,040,819% | +99,201% | +133% to +7,437% | +86% to +1,552% |
-| Stat. Significant | Yes (p<0.001) | Yes for all 8 (p<0.005) | Yes | — | — |
-| Max Viable Fee | 0.27 bps | >0.5 bps (7/8) | N/A | >0.5 bps (all) | >0.5 bps (all) |
+| Metric | BTC (NB03) | 8 Altcoins (NB04) | Portfolio (NB04) | Long-Only 1m (NB05) | Long-Only 2m (NB05) | FULL 1m LO (NB06) |
+|--------|------------|-------------------|-----------------|---------------------|---------------------|-------------------|
+| OOS Days | 12 | 9 | 9 | 9 | 9 | 9 |
+| Daily Win Rate | 100% (12/12) | 100% (9/9 each) | 100% (9/9) | 100% (9/9) | 89% (8/9) | 100% (8/9 assets) |
+| Trade Win Rate | 54.9% | 53.7%-72.4% | N/A | 57.1%-76.2% | 56.3%-68.4% | — |
+| AUC | 0.748 | 0.616-0.827 | N/A | 0.593-0.783 | 0.560-0.706 | — |
+| Return (0.1 bps) | +161.4% | +1,323% to +2,040,819% | +99,201% | +133% to +7,437% | +86% to +1,552% | +56% to +783,115% |
+| Portfolio | — | — | +99,201% | +2,310% | +650% | **+35,483%** |
+| Stat. Significant | Yes (p<0.001) | Yes for all 8 (p<0.005) | Yes | — | — | 4/9 Holm-Bonf. |
+| Max Viable Fee | 0.27 bps | >0.5 bps (7/8) | N/A | >0.5 bps (all) | >0.5 bps (all) | >0.5 bps (7/9) |
 
 ---
 
@@ -157,10 +163,16 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 | **2026-02-12** | **Reporting** | **Interactive Plotly dashboards: equity+DD, trades, rolling metrics, fees, comparison** | **NB05 Part 8** |
 | **2026-02-12** | **Reporting** | **Validated: HBAR +161% (PF 2.51, DD -3.43%), DOGE +149% (PF 2.28, DD -5.89%)** | **NB05 Part 8** |
 | **2026-02-12** | **Reporting** | **Reports exported to `research/reports/` (trades.csv, equity.csv, metrics.json)** | **NB05 Part 8** |
+| **2026-02-13** | **NB06** | **Extended feature screening: 111 features × 4 assets × 3 horizons. 19 new features found** | **NB06** |
+| **2026-02-13** | **NB06** | **13 engineered interaction features (imb_L3_div_rv60, depth_asymmetry, etc.)** | **NB06** |
+| **2026-02-13** | **NB06** | **EXTENDED (91) beats PROD (72) by 1.09x–2.11x return ratio on all 4 assets** | **NB06** |
+| **2026-02-13** | **NB06** | **Multi-timeframe ensemble: 30s dominates. Ensembles don't beat single best horizon** | **NB06** |
+| **2026-02-13** | **NB06** | **Dynamic allocation: Momentum +1,190,717% (best). All methods 9/9 profitable days** | **NB06** |
+| **2026-02-13** | **NB06** | **Full 9-asset validation (FULL, 1m, LO): +35,483% EW portfolio (15.4x over NB05)** | **NB06** |
 
-### Key Strategic Insight (NB05)
+### Key Strategic Insight (NB06)
 
-> **1m-2m horizons offer the best production trade-off: lower trade frequency (~700-1,500/day), wider fee tolerance (all profitable at 0.5 bps), higher long-only alpha retention (55% at 2m vs 20% at 30s), and 100% feature stability under daily expanding-window retraining. Long-only mode is fully viable — no short selling required.**
+> **Extended features (104 total) deliver 15.4x portfolio improvement over NB05's 72-feature baseline. 19 newly discovered features (led by volume band features `bid_vol_band_0_5bps` |r|=0.137) plus 13 engineered interactions materially improve alpha extraction. 30s horizon dominates raw returns (AUC 0.735–0.796) but 1m remains preferred for production. Momentum-weighted allocation (+1,190,717%) outperforms equal-weight (+820,221%). All 9 assets P(>0) ≥ 99.9% by bootstrap.**
 
 ---
 
@@ -172,6 +184,7 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 - `research/notebooks/03_advanced_alpha_optimization.ipynb` - COMPLETE (42 cells)
 - `research/notebooks/04_multi_asset_alpha_expansion.ipynb` - COMPLETE (27 cells, 19 code)
 - `research/notebooks/05_production_alpha_realistic_execution.ipynb` - COMPLETE (37 cells, 28 code) — includes Part 8: Reporting Framework
+- `research/notebooks/06_extended_features_multitimeframe_ensemble.ipynb` - COMPLETE (30 cells) — Extended features, ensemble, allocation
 
 ### Deployment Bundles
 - `research/deployments/alpha_v2/` - NB03 BTC-optimized (7 files)
@@ -182,6 +195,13 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
   - `capacity_analysis.csv` - Kyle's lambda, depth, volume, max positions
   - `full_validation.json` - 9-asset results at 1m and 2m horizons
   - `results_summary.json` - Comprehensive NB05 findings
+- `research/deployments/alpha_v5_ensemble/` - NB06 extended ensemble (6 files)
+  - `config.json` - Strategy parameters, feature sets, ensemble config
+  - `features.json` - 104-feature list (FULL set)
+  - `full_validation.json` - 9-asset results with FULL features at 1m LO
+  - `ensemble_results.json` - Multi-timeframe ensemble methods & results
+  - `allocation_results.json` - Dynamic allocation methods & portfolio returns
+  - `feature_screening.json` - 111-feature screening results with correlations
 
 ### Result Files
 - `research/results/02_strategy_results.json`
@@ -216,4 +236,4 @@ features = ['imbalance_L3', 'imbalance_L5', 'imbalance_L1', 'imb_band_0_5bps',
 
 ---
 
-*Last Updated: February 12, 2026*
+*Last Updated: February 13, 2026*

@@ -286,8 +286,8 @@ Wants=network-online.target
 Type=simple
 User=admin
 Group=admin
-WorkingDirectory=/home/admin/Desktop/market-data-pipeline
-ExecStart=/home/admin/Desktop/market-data-pipeline/venv/bin/python \
+WorkingDirectory=/home/admin/Desktop/daedalus
+ExecStart=/home/admin/Desktop/daedalus/venv/bin/python \
     scripts/daedalus_supervisor.py --sources ccxt
 Restart=always
 RestartSec=30

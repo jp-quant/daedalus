@@ -10,7 +10,7 @@
 #   1. Copy this file to /etc/systemd/system/daedalus.service
 #   2. **IMPORTANT**: Edit User, Group, and all paths to match YOUR system:
 #      - User/Group: Your username (run `whoami` to check)
-#      - WorkingDirectory: Path to your market-data-pipeline folder
+#      - WorkingDirectory: Path to your daedalus folder
 #      - ExecStart: Path to your venv python and supervisor script
 #   3. sudo systemctl daemon-reload
 #   4. sudo systemctl enable daedalus
@@ -25,13 +25,13 @@
 #
 # Troubleshooting:
 #   - "Failed to determine user credentials": Wrong User/Group - check `whoami`
-#   - Check logs: tail -f /path/to/market-data-pipeline/logs/ingestion.log
+#   - Check logs: tail -f /path/to/daedalus/logs/ingestion.log
 #   - Check status: python scripts/daedalus_supervisor.py --status
 #   - Memory issues: Check logs for "memory critical" messages
 
 [Unit]
 Description=Daedalus Market Data Pipeline Supervisor
-Documentation=https://github.com/jp-quant/market-data-pipeline
+Documentation=https://github.com/jp-quant/daedalus
 After=network-online.target
 Wants=network-online.target
 
@@ -47,13 +47,13 @@ Group=admin
 
 # Update this to your actual project path
 # Common locations:
-#   /home/admin/Desktop/market-data-pipeline  (Pi4 with admin user)
-#   /home/pi/market-data-pipeline             (Pi4 with pi user)
-#   /home/username/market-data-pipeline       (other Linux)
-WorkingDirectory=/home/admin/Desktop/market-data-pipeline
+#   /home/admin/Desktop/daedalus  (Pi4 with admin user)
+#   /home/pi/daedalus             (Pi4 with pi user)
+#   /home/username/daedalus       (other Linux)
+WorkingDirectory=/home/admin/Desktop/daedalus
 
 # Update paths to match WorkingDirectory above
-ExecStart=/home/admin/Desktop/market-data-pipeline/venv/bin/python /home/admin/Desktop/market-data-pipeline/scripts/daedalus_supervisor.py
+ExecStart=/home/admin/Desktop/daedalus/venv/bin/python /home/admin/Desktop/daedalus/scripts/daedalus_supervisor.py
 # ============================================================================
 
 # Graceful shutdown with 60 second timeout

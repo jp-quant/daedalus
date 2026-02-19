@@ -1,0 +1,154 @@
+{
+  "HBAR-USD": {
+    "30s": {
+      "avg_auc": 0.7471045736683346,
+      "total_return_pct": 1664684.176323246,
+      "avg_win_rate": 0.833812814668332,
+      "profitable_days": 9
+    },
+    "1m": {
+      "avg_auc": 0.6807759384738862,
+      "total_return_pct": 529946.8142236024,
+      "avg_win_rate": 0.8556288763171779,
+      "profitable_days": 9
+    },
+    "2m": {
+      "avg_auc": 0.622944374760803,
+      "total_return_pct": 133738.8883078008,
+      "avg_win_rate": 0.8558181762251258,
+      "profitable_days": 9
+    },
+    "auc_weighted": {
+      "avg_auc": 0.6476347351674261,
+      "total_return_pct": 803896.1409631374,
+      "avg_win_rate": 0.8524444433569399,
+      "profitable_days": 9
+    },
+    "simple_avg": {
+      "avg_auc": 0.6476128628458431,
+      "total_return_pct": 749514.3431226393,
+      "avg_win_rate": 0.8536489153986527,
+      "profitable_days": 9
+    },
+    "agreement": {
+      "avg_auc": 0.5637891856420221,
+      "total_return_pct": 595249.0125517853,
+      "avg_win_rate": 0.8549512822564969,
+      "profitable_days": 9
+    }
+  },
+  "DOGE-USD": {
+    "30s": {
+      "avg_auc": 0.7745971745401924,
+      "total_return_pct": 1183847.5919557349,
+      "avg_win_rate": 0.8332684538885835,
+      "profitable_days": 9
+    },
+    "1m": {
+      "avg_auc": 0.7116850402615843,
+      "total_return_pct": 733958.4136141277,
+      "avg_win_rate": 0.8607774665508743,
+      "profitable_days": 9
+    },
+    "2m": {
+      "avg_auc": 0.6542445977008282,
+      "total_return_pct": 199405.55654033765,
+      "avg_win_rate": 0.8849223701186754,
+      "profitable_days": 9
+    },
+    "auc_weighted": {
+      "avg_auc": 0.675077747459459,
+      "total_return_pct": 825860.7992706193,
+      "avg_win_rate": 0.8573212219832548,
+      "profitable_days": 9
+    },
+    "simple_avg": {
+      "avg_auc": 0.6752584348205266,
+      "total_return_pct": 793037.8708657422,
+      "avg_win_rate": 0.8597129205499469,
+      "profitable_days": 9
+    },
+    "agreement": {
+      "avg_auc": 0.5858446648591874,
+      "total_return_pct": 783372.9318087643,
+      "avg_win_rate": 0.8615280825106242,
+      "profitable_days": 9
+    }
+  },
+  "ADA-USD": {
+    "30s": {
+      "avg_auc": 0.7963451128609573,
+      "total_return_pct": 1759920.7021293587,
+      "avg_win_rate": 0.8842325768730104,
+      "profitable_days": 9
+    },
+    "1m": {
+      "avg_auc": 0.719479767116034,
+      "total_return_pct": 275991.1938060207,
+      "avg_win_rate": 0.8826979126496065,
+      "profitable_days": 9
+    },
+    "2m": {
+      "avg_auc": 0.6497920257459184,
+      "total_return_pct": 51586.707911516416,
+      "avg_win_rate": 0.8608732505831704,
+      "profitable_days": 9
+    },
+    "auc_weighted": {
+      "avg_auc": 0.6725240051513957,
+      "total_return_pct": 619437.8499982519,
+      "avg_win_rate": 0.8873986381035908,
+      "profitable_days": 9
+    },
+    "simple_avg": {
+      "avg_auc": 0.6724771809541864,
+      "total_return_pct": 543782.8686222442,
+      "avg_win_rate": 0.887010788645216,
+      "profitable_days": 9
+    },
+    "agreement": {
+      "avg_auc": 0.5652126791861293,
+      "total_return_pct": 370132.1546225698,
+      "avg_win_rate": 0.8815481494053193,
+      "profitable_days": 9
+    }
+  },
+  "AAVE-USD": {
+    "30s": {
+      "avg_auc": 0.7349523324978092,
+      "total_return_pct": 52626.03380559018,
+      "avg_win_rate": 0.7617971846697331,
+      "profitable_days": 9
+    },
+    "1m": {
+      "avg_auc": 0.6716856200492689,
+      "total_return_pct": 27583.917167491727,
+      "avg_win_rate": 0.7788206622422692,
+      "profitable_days": 9
+    },
+    "2m": {
+      "avg_auc": 0.6198646439315963,
+      "total_return_pct": 11089.977124514351,
+      "avg_win_rate": 0.7672187117237048,
+      "profitable_days": 9
+    },
+    "auc_weighted": {
+      "avg_auc": 0.6407454481322232,
+      "total_return_pct": 33888.764118663225,
+      "avg_win_rate": 0.7880161415333174,
+      "profitable_days": 9
+    },
+    "simple_avg": {
+      "avg_auc": 0.6405772414058899,
+      "total_return_pct": 32111.568851632343,
+      "avg_win_rate": 0.7870733323844069,
+      "profitable_days": 9
+    },
+    "agreement": {
+      "avg_auc": 0.5562696370359208,
+      "total_return_pct": 29638.14732143799,
+      "avg_win_rate": 0.7781495876222809,
+      "profitable_days": 9
+    }
+  }
+}

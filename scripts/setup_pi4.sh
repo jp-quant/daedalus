@@ -126,7 +126,7 @@ setup_systemd() {
     
     # Create customized service file
     TEMP_SERVICE="/tmp/daedalus.service"
-    sed -e "s|/home/pi/market-data-pipeline|$PROJECT_DIR|g" \
+    sed -e "s|/home/pi/daedalus|$PROJECT_DIR|g" \
         -e "s|User=pi|User=$USER|g" \
         -e "s|Group=pi|Group=$USER|g" \
         "$SERVICE_FILE" > "$TEMP_SERVICE"

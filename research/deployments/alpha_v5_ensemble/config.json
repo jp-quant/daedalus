@@ -1,0 +1,52 @@
+{
+  "version": "v5_ensemble",
+  "notebook": "06_extended_features_multitimeframe_ensemble",
+  "date": "2026-02-13",
+  "strategy": {
+    "type": "XGBoost_DirectionClassifier",
+    "horizons": {
+      "30s": 30,
+      "1m": 60,
+      "2m": 120
+    },
+    "ensemble_method": "auc_weighted",
+    "long_threshold": 0.6,
+    "short_threshold": null,
+    "mode": "long_only"
+  },
+  "model": {
+    "n_estimators": 200,
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "min_child_weight": 100,
+    "retraining": "daily_expanding_window"
+  },
+  "features": {
+    "set": "FULL",
+    "n_production": 72,
+    "n_extended": 91,
+    "n_engineered": 13,
+    "n_total": 104
+  },
+  "allocation": {
+    "method": "Momentum",
+    "lookback": 3
+  },
+  "execution": {
+    "base_fee_bps": 0.1,
+    "max_fee_viable_bps": 0.5
+  },
+  "data": {
+    "n_train_days": 30,
+    "n_test_days": 9,
+    "train_range": "2026-01-01 to 2026-02-01",
+    "test_range": "2026-02-02 to 2026-02-10",
+    "n_assets": 9,
+    "focus_assets": [
+      "HBAR-USD",
+      "DOGE-USD",
+      "ADA-USD",
+      "AAVE-USD"
+    ]
+  }
+}

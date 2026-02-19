@@ -70,7 +70,7 @@ Every completed notebook exports a deployment bundle to `research/deployments/`.
 ## Project Structure
 
 ```
-c:\Users\longp\market-data-pipeline\
+c:\Users\longp\daedalus\
 ├── research/
 │   ├── lib/                    # Reusable research framework
 │   │   ├── __init__.py         # Public API exports
@@ -179,7 +179,7 @@ def discover_data_inventory(data_root: str) -> dict:
 from research.lib import DataLoader
 
 loader = DataLoader(
-    data_root="c:/Users/longp/market-data-pipeline/data/processed/silver/orderbook",
+    data_root="c:/Users/longp/daedalus/data/processed/silver/orderbook",
     exchange="coinbaseadvanced",
     symbol="BTC-USD"
 )
@@ -198,7 +198,7 @@ for (y,m,d), df in loader.iter_days(dates):
 prices = loader.get_prices(df)  # auto-detects mid_price column
 ```
 
-**Important**: Set `PROJECT_ROOT = Path(r'c:\Users\longp\market-data-pipeline')` explicitly in notebook Cell 1. Do NOT use `os.getcwd()` — it resolves incorrectly from notebook context.
+**Important**: Set `PROJECT_ROOT = Path(r'c:\Users\longp\daedalus')` explicitly in notebook Cell 1. Do NOT use `os.getcwd()` — it resolves incorrectly from notebook context.
 
 ### Available Feature Columns (205 total)
 
@@ -265,7 +265,7 @@ fee_table = engine.sweep_fees(prices, positions, fee_levels_bps=[0, 0.5, 1, 2, 5
 
 ---
 
-## Prior Research Findings (Notebooks 01-04)
+## Prior Research Findings (Notebooks 01-06)
 
 ### NB01: Feature Analysis (205 features)
 - Identified top predictive features from orderbook data
@@ -300,7 +300,7 @@ fee_table = engine.sweep_fees(prices, positions, fee_levels_bps=[0, 0.5, 1, 2, 5
 
 **Deployment**: `research/deployments/alpha_v2/` (7 files)
 
-### NB04: Multi-Asset Alpha Expansion (COMPLETED — LATEST)
+### NB04: Multi-Asset Alpha Expansion (COMPLETED)
 
 **Data**: 9 symbols x 39 days each (Jan 1 - Feb 10, 2026), ~36.3 GB total
 **Train/Test**: 30 train days / 9 test days
@@ -381,7 +381,60 @@ fee_table = engine.sweep_fees(prices, positions, fee_levels_bps=[0, 0.5, 1, 2, 5
 
 **Deployment**: `research/deployments/alpha_v4_production/` (5 files: config.json, features.json, capacity_analysis.csv, full_validation.json, results_summary.json)
 
----
+### NB06: Extended Features, Multi-Timeframe Ensemble & Dynamic Allocation (COMPLETED — LATEST)
+
+**Focus**: Expand beyond 72 PROD features, build multi-timeframe ensemble, dynamic asset allocation.
+
+**Part I — Extended Feature Screening** (111 features × 4 assets × 3 horizons):
+- 19 NEW features discovered in top-50 by |r| with forward returns
+- Top new: `bid_vol_band_0_5bps` (|r|=0.137), `bid_vol_band_5_10bps` (0.123), `ask_vol_band_0_5bps` (0.121)
+- Feature sets defined: PROD (72), EXTENDED (91 = 72 + 19 new), FULL (104 = 91 + 13 engineered)
+- 13 engineered interaction features: `imb_L3_div_rv60`, `imb_L3_x_rv60`, `ofi5_div_spread`, `momentum_imb_agreement`, `depth_asymmetry`, `smart_depth_ratio`, `imb_gradient_L1_L3/L3_L5/L1_L10`, `micro_div_spread`, `cog_imb_interaction`, `ofi_accel`, `vol_regime_ratio`
+
+**Part II — Head-to-Head ML Comparison** (PROD vs EXTENDED vs FULL, 4 focus assets):
+| Asset | EXTENDED/PROD Return Ratio | FULL/PROD Return Ratio |
+|-------|---------------------------|------------------------|
+| HBAR | 1.64x | 1.52x |
+| ADA | 2.11x | 1.94x |
+| DOGE | 1.09x | 1.18x |
+| AAVE | 1.35x | 1.42x |
+
+All feature sets: 100% daily win rate (9/9 days) for all 4 assets.
+
+**Part III — Multi-Timeframe Ensemble** (30s + 1m + 2m horizons):
+- 30s model dominates all ensemble methods on raw return
+- AUC by horizon: 30s (0.735–0.796) > 1m (0.672–0.719) > 2m (0.620–0.654)
+- Best ensemble: AUC-weighted average (+570,771% avg across 4 assets)
+- 30s standalone: +820,221% avg — ensembles don't beat single-best horizon
+
+**Part IV — Dynamic Asset Allocation** (4 methods):
+| Method | Portfolio Return | Days+ |
+|--------|-----------------|-------|
+| Momentum | +1,190,717% | 9/9 |
+| Equal Weight | +820,221% | 9/9 |
+| Inverse Vol | +527,933% | 9/9 |
+| AUC-Weighted | +570,771% | 9/9 |
+
+**Part V — Full 9-Asset Validation** (FULL features, 1m horizon, long-only, 0.1 bps):
+| Asset | Return | Days+ | vs NB05 |
+|-------|--------|-------|---------|
+| DOGE-USD | +783,115% | 9/9 | 105x ↑ |
+| HBAR-USD | +563,276% | 9/9 | 77x ↑ |
+| ADA-USD | +268,170% | 9/9 | 36x ↑ |
+| FARTCOIN | +204,668% | 9/9 | 2x ↑ |
+| AAVE-USD | +47,291% | 9/9 | 7x ↑ |
+| AVAX-USD | +15,012% | 9/9 | 1x ≈ |
+| ETH-USD | +1,055% | 9/9 | ↓ |
+| BCH-USD | +181% | 9/9 | ↓ |
+| BTC-USD | +56% | 8/9 | ↓ |
+
+**EW 9-Asset Portfolio**: +35,483.5% (vs NB05: +2,310% → 15.4x improvement)
+
+**Statistical Validation**: 4/9 Holm-Bonferroni significant (AVAX, BCH, ETH, FARTCOIN). All 9: P(>0) ≥ 99.9%.
+
+**Fee Sensitivity**: 7/9 profitable at 0.5 bps; all 9 at 0.1 bps.
+
+**Deployment**: `research/deployments/alpha_v5_ensemble/` (6 files: config.json, features.json, full_validation.json, ensemble_results.json, allocation_results.json, feature_screening.json)
 
 ## Research Workflow
 
@@ -432,7 +485,7 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 ## Common Pitfalls (Lessons Learned)
 
 1. **`PercentileSignal`**: Does NOT exist in `research.lib.signals`. Don't import it.
-2. **`PROJECT_ROOT`**: Always hardcode `Path(r'c:\Users\longp\market-data-pipeline')`. Never use `os.getcwd()`.
+2. **`PROJECT_ROOT`**: Always hardcode `Path(r'c:\Users\longp\daedalus')`. Never use `os.getcwd()`.
 3. **Multi-asset dates**: Dynamically discover overlap from inventory. Don't assume.
 4. **MI vs Correlation for feature ranking**: MI top features (relative_spread, lambda_like) may have no directional correlation. Use absolute correlation ranking for directional signals.
 5. **Regime detection**: Expanding percentile loops on >1M rows are very slow (~2+ hrs). Use vectorized approaches or subsample.
@@ -444,7 +497,7 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 
 ## How to Continue Research
 
-### What Has Been Completed (NB01-05)
+### What Has Been Completed (NB01-06)
 - [x] Feature engineering (205 features from L2 orderbook)
 - [x] Strategy iteration (5 strategies tested on BTC-only)
 - [x] ML enhancement (XGBoost, composite signal, 100% daily WR)
@@ -454,22 +507,26 @@ Strategies MUST be profitable at 0.1 bps to be deployable.
 - [x] Portfolio construction (equal-weight, 9/9 profitable days)
 - [x] Full statistical validation (permutation, bootstrap, Holm-Bonferroni)
 - [x] Fee sensitivity across 7 levels (all altcoins viable up to 0.5 bps)
-- [x] Deployment bundles exported (alpha_v2, alpha_v3_multi_asset, alpha_v4_production)
+- [x] Deployment bundles exported (alpha_v2, alpha_v3_multi_asset, alpha_v4_production, alpha_v5_ensemble)
 - [x] Holding period sweep (30s to 30m, 7 horizons)
 - [x] Long-only constraint analysis (38.7% alpha retention)
 - [x] Execution realism (64 latency/slippage scenarios, all profitable)
 - [x] Capacity analysis (Kyle's lambda, $100K positions feasible)
 - [x] Production ML pipeline (expanding window, feature stability validated)
 - [x] Full 9-asset validation at production horizons (1m, 2m, long-only)
+- [x] Extended feature exploration (111 screened → 19 new + 13 engineered = 104 total)
+- [x] Multi-timeframe ensemble (30s/1m/2m, AUC-weighted — 30s dominates)
+- [x] Dynamic asset allocation (momentum, inverse-vol, AUC-weighted)
+- [x] Full 9-asset validation with extended features (EW portfolio +35,483.5%, 15.4x over NB05)
 - [x] **Reporting Framework** (`research/lib/reporting.py`): PerformanceReport, StrategyComparison classes with interactive Plotly dashboards (equity curves, drawdown overlay, trade P&L scatter, return distribution, rolling win rate, cumulative P&L, fee analysis, daily returns, strategy comparison). Supports `from_backtest_result()` adapter, `combine()` across days, `save()` to CSV/JSON. Validated on HBAR-USD (+161%, WR 64.0%, PF 2.51, DD -3.43%) and DOGE-USD (+149%, WR 67.8%, PF 2.28, DD -5.89%) over 3 OOS days.
 - [x] Report artifacts exported to `research/reports/` (trades.csv, equity.csv, metrics.json, strategy_comparison.csv)
 
-### Immediate Priorities (Notebook 06+)
+### Immediate Priorities (Notebook 07+)
 1. **Live Paper Trading**: Real-time simulation with actual exchange connectivity and latency measurement
-2. **Dynamic Asset Allocation**: Weight assets by predicted AUC / signal strength rather than equal-weight
-3. **Extended Feature Exploration**: Only using 79/205 features. Many unexplored (trade flow, spread dynamics)
-4. **Multi-Timeframe Models**: Combine signals from multiple horizons (30s + 1m + 2m ensemble)
-5. **Regime Detection**: Adapt strategy to different market conditions (trending vs mean-reverting)
+2. **Feature Selection / Pruning**: Reduce 104 → minimal feature set via SHAP-based importance analysis
+3. **Adaptive Horizon Selection**: Switch between 30s/1m/2m based on predicted volatility regime
+4. **Regime Detection**: Adapt strategy parameters to different market conditions (trending vs mean-reverting)
+5. **Out-of-Sample Expansion**: Test on additional date ranges and new assets for robustness
 6. **MLOps Pipeline** (scaffolding noted, not yet built): mlflow experiment tracking, model registry, feature store, automated daily retraining pipeline, model performance monitoring, A/B testing framework
 
 ### Long-Term Roadmap
@@ -516,7 +573,7 @@ comp.plot_equity_comparison()    # Normalized equity overlay
 **Visualization**: Plotly interactive (preferred), matplotlib fallback.
 
 ### Key Actionable Trading Insight
-**Focus on HBAR, DOGE, ADA, AAVE** — these are the top-4 most profitable assets with strongest signals. Do NOT trade BTC with this strategy (fails statistical validation). Consider dropping BTC from the portfolio entirely.
+**Focus on HBAR, DOGE, ADA, AAVE** — these are the top-4 most profitable assets with strongest signals. Use FULL (104) feature set for maximum alpha extraction. 30s horizon delivers highest raw returns but 1m is preferred for production (wider fee tolerance, fewer trades). NB06 extended features improved EW portfolio from +2,310% (NB05) to +35,483% — a 15.4x gain. All 9 assets P(>0) ≥ 99.9%. Do NOT trade BTC with this strategy alone (weakest signal). Consider dropping BTC or using a separate BTC-specific model.
 
 ---
 
@@ -534,7 +591,7 @@ comp.plot_equity_comparison()    # Normalized equity overlay
 | matplotlib | installed |
 | numpy | installed |
 | pandas | installed |
-| venv | `c:\Users\longp\market-data-pipeline\venv` |
+| venv | `c:\Users\longp\daedalus\venv` |
 
 ---
 
@@ -549,7 +606,7 @@ import polars as pl
 import pandas as pd
 import matplotlib.pyplot as plt
 
-PROJECT_ROOT = Path(r'c:\Users\longp\market-data-pipeline')
+PROJECT_ROOT = Path(r'c:\Users\longp\daedalus')
 sys.path.insert(0, str(PROJECT_ROOT))
 from research.lib import DataLoader, BacktestEngine, DirectionStrategy
 

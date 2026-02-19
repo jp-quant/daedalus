@@ -17,6 +17,7 @@
 | [03: Alpha Optimization](notebooks/03_advanced_alpha_optimization.ipynb) | ✅ Complete | XGBoost ML, composite signal | 100% daily WR | VIP Tier+ |
 | [04: Multi-Asset Expansion](notebooks/04_multi_asset_alpha_expansion.ipynb) | ✅ Complete | 9-asset portfolio, +99,201% OOS | 100% daily WR | **Active Trader+** |
 | [05: Production Alpha](notebooks/05_production_alpha_realistic_execution.ipynb) | ✅ Complete | Execution realism, capacity, long-only | 100% daily WR | **Production-Ready** |
+| [06: Extended Features & Ensemble](notebooks/06_extended_features_multitimeframe_ensemble.ipynb) | ✅ Complete | 104 features, +35,483% portfolio, ensemble | 100% daily WR | **Production-Ready** |
 
 *Strategy viable for active traders (0.1-0.5 bps fee tier) — not just market makers*
 
@@ -68,7 +69,8 @@ research/
 │   ├── 02_microstructure_alpha_discovery.ipynb # BTC-only strategy iteration
 │   ├── 03_advanced_alpha_optimization.ipynb    # ML, composite signal, multi-asset
 │   ├── 04_multi_asset_alpha_expansion.ipynb    # 9-asset expansion, portfolio
-│   └── 05_production_alpha_realistic_execution.ipynb  # Execution realism, capacity, production pipeline
+│   ├── 05_production_alpha_realistic_execution.ipynb  # Execution realism, capacity, production pipeline
+│   └── 06_extended_features_multitimeframe_ensemble.ipynb  # Extended features, ensemble, allocation
 │
 ├── lib/                               # Research framework (reusable)
 │   ├── __init__.py                    #   Public API
@@ -83,7 +85,8 @@ research/
 ├── deployments/                       # Production deployment bundles
 │   ├── alpha_v2/                      #   NB03 BTC-optimized (7 files)
 │   ├── alpha_v3_multi_asset/          #   NB04 9-asset models (7 files)
-│   └── alpha_v4_production/           #   NB05 production alpha (5 files)
+│   ├── alpha_v4_production/           #   NB05 production alpha (5 files)
+│   └── alpha_v5_ensemble/             #   NB06 extended ensemble (6 files)
 │
 ├── results/                           # Structured outputs
 │   ├── 02_strategy_results.json
@@ -142,7 +145,7 @@ Raw L2 Orderbook     Feature Engineering      Signal Generation
 | 4 | `imb_band_0_5bps` | 0.162 | ADA-USD | 0.219 |
 | 5 | `cog_vs_mid` | 0.134 | ADA-USD | 0.184 |
 
-### ML Walk-Forward Performance (XGBoost, 0.6/0.4, 30-bar hold, 0.1 bps)
+### ML Walk-Forward Performance — NB05 Baseline (XGBoost, 0.6/0.4, 30-bar hold, 0.1 bps)
 
 ```
 Asset        | Return         | AUC   | WR    | Days+
@@ -157,6 +160,33 @@ ETH-USD      | +2,822%        | 0.616 | 53.7% | 9/9
 BCH-USD      | +1,323%        | 0.622 | 57.6% | 9/9
 BTC-USD      | +7.4%          | 0.576 | 47.1% | 5/9
 ```
+
+### NB06: Extended Features + Ensemble (FULL 104 features, 1m horizon, long-only, 0.1 bps)
+
+```
+Asset        | Return         | AUC   | WR    | Days+ | vs NB05
+-------------+----------------+-------+-------+-------+----------
+DOGE-USD     | +783,115%      | —     | —     | 9/9   | 105x ↑
+HBAR-USD     | +563,276%      | —     | —     | 9/9   |  77x ↑
+ADA-USD      | +268,170%      | —     | —     | 9/9   |  36x ↑
+FARTCOIN-USD | +204,668%      | —     | —     | 9/9   |   2x ↑
+AAVE-USD     | +47,291%       | —     | —     | 9/9   |   7x ↑
+AVAX-USD     | +15,012%       | —     | —     | 9/9   |   1x ≈
+ETH-USD      | +1,055%        | —     | —     | 9/9   |   — ↓
+BCH-USD      | +181%          | —     | —     | 9/9   |   — ↓
+BTC-USD      | +56%           | —     | —     | 8/9   |   — ↓
+
+EW 9-Asset Portfolio: +35,483.5%  (vs NB05: +2,310% → 15.4x improvement)
+```
+
+**Key NB06 Findings:**
+- 19 new features discovered (led by `bid_vol_band_0_5bps` |r|=0.137)
+- 13 engineered interaction features (e.g., `imb_L3_div_rv60`, `depth_asymmetry`)
+- EXTENDED (91 features) beats PROD (72) by 1.09x–2.11x return ratio
+- 30s horizon dominates all ensemble methods (AUC 0.735–0.796)
+- Momentum allocation: +1,190,717% (best single method)
+- 4/9 assets Holm-Bonferroni significant; all 9 P(>0) ≥ 99.9%
+- 7/9 assets profitable up to 0.5 bps fees
 
 ---
 
@@ -221,16 +251,17 @@ print(f"Return: {result.total_return_pct:+.2f}%, Sharpe: {result.sharpe:.1f}")
 - ✅ **NB03**: ML enhancement, composite signal, regime conditioning, early multi-asset
 - ✅ **NB04**: Full 9-asset expansion (39 days), portfolio construction, statistical validation, fee sensitivity
 - ✅ **NB05**: Production alpha — holding period sweep (30s-30m), long-only analysis, execution realism (64 latency/slippage scenarios), capacity analysis (Kyle's lambda, up to $100K), production ML pipeline (expanding window, feature stability), full 9-asset validation at production horizons
+- ✅ **NB06**: Extended feature exploration (111 screened → 19 new + 13 engineered), multi-timeframe ensemble (30s/1m/2m, AUC-weighted), dynamic asset allocation (momentum/inverse-vol), full 9-asset validation → EW portfolio +35,483.5% (15.4x over NB05)
 - ✅ **Reporting Framework**: `research/lib/reporting.py` — comprehensive portfolio & strategy performance reporting with interactive Plotly dashboards (equity curves, drawdown, trade analysis, rolling metrics, fee analysis, strategy comparison). Exports to CSV/JSON. Validated on HBAR-USD (+161%, 3,073 trades) and DOGE-USD (+149%, 3,322 trades) over 3 OOS days.
 
-### Next Steps (Notebook 06+)
+### Next Steps (Notebook 07+)
 1. **Live Paper Trading**: Real-time simulation with actual exchange connectivity
-2. **Dynamic Asset Allocation**: Weight assets by predicted AUC / signal strength rather than equal-weight
-3. **Extended Feature Exploration**: Only using 79/205 features. Many unexplored.
-4. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation
-5. **Regime Detection**: Adapt to different market conditions
-6. **Multi-Timeframe Models**: Combine signals from multiple horizons
-7. **MLOps Pipeline**: mlflow model registry, experiment tracking, automated retraining pipeline, feature store
+2. **Cross-Exchange Arbitrage**: Latency-adjusted signal propagation
+3. **Regime Detection**: Adapt strategy parameters to different market conditions
+4. **MLOps Pipeline**: mlflow model registry, experiment tracking, automated retraining pipeline, feature store
+5. **Feature Selection / Pruning**: Reduce 104 → minimal set with SHAP-based importance
+6. **Adaptive Horizon Selection**: Switch between 30s/1m/2m based on predicted volatility regime
+7. **Out-of-Sample Expansion**: Test on additional date ranges and new assets
 
 ---
 
@@ -248,5 +279,5 @@ For collaboration or inquiries regarding this research, please open an issue or 
 
 ---
 
-*Last Updated: February 12, 2026*  
-*Notebooks: 5 complete | Assets: 9 | Data: 39 days (Jan 1 - Feb 10, 2026) | Total: ~36.3 GB*
+*Last Updated: February 13, 2026*  
+*Notebooks: 6 complete | Assets: 9 | Data: 39 days (Jan 1 - Feb 10, 2026) | Total: ~36.3 GB*

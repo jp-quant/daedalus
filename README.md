@@ -827,7 +827,7 @@ python scripts/run_compaction.py data/processed/silver/orderbook \
 
 ```bash
 # 1. Update code
-cd ~/market-data-pipeline
+cd ~/daedalus
 git pull  # or scp/rsync updated files
 
 # 2. Install dependencies
@@ -849,14 +849,14 @@ journalctl -u daedalus -f  # Follow logs
 
 ```bash
 # Watch both ingestion and sync logs simultaneously
-tail -f ~/market-data-pipeline/logs/ingestion.log ~/market-data-pipeline/logs/sync.log
+tail -f ~/daedalus/logs/ingestion.log ~/daedalus/logs/sync.log
 
 # Or in separate terminals:
 # Terminal 1: Ingestion
-tail -f ~/market-data-pipeline/logs/ingestion.log
+tail -f ~/daedalus/logs/ingestion.log
 
 # Terminal 2: Sync
-tail -f ~/market-data-pipeline/logs/sync.log
+tail -f ~/daedalus/logs/sync.log
 
 # Check supervisor status
 python scripts/daedalus_supervisor.py --status

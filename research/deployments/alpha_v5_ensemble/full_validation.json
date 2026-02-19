@@ -1,0 +1,173 @@
+{
+  "AAVE-USD": {
+    "avg_auc": 0.6716856200492689,
+    "total_return_pct": 28908.110348221355,
+    "avg_win_rate": 0.7802109560855426,
+    "avg_trades_per_day": 3239.222222222222,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.01,
+      "boot_p_positive": 1.0,
+      "holm_significant": "False"
+    },
+    "fee_sensitivity": {
+      "0": 51843.919497548646,
+      "0.1": 28908.110348221355,
+      "0.2": 16092.849206007379,
+      "0.5": 2716.213515572035
+    }
+  },
+  "ADA-USD": {
+    "avg_auc": 0.719479767116034,
+    "total_return_pct": 268169.5981355939,
+    "avg_win_rate": 0.8820251269945655,
+    "avg_trades_per_day": 2716.1111111111113,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.03,
+      "boot_p_positive": 1.0,
+      "holm_significant": "False"
+    },
+    "fee_sensitivity": {
+      "0": 437202.4063710802,
+      "0.1": 268169.5981355939,
+      "0.2": 164453.04869608718,
+      "0.5": 37866.114319981134
+    }
+  },
+  "AVAX-USD": {
+    "avg_auc": 0.7859568675493901,
+    "total_return_pct": 8272.060652364187,
+    "avg_win_rate": 0.8150762514308866,
+    "avg_trades_per_day": 597.2222222222222,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.005,
+      "boot_p_positive": 1.0,
+      "holm_significant": "True"
+    },
+    "fee_sensitivity": {
+      "0": 9220.726747446592,
+      "0.1": 8272.060652364187,
+      "0.2": 7417.480594976031,
+      "0.5": 5346.059146994036
+    }
+  },
+  "BCH-USD": {
+    "avg_auc": 0.6100240212885966,
+    "total_return_pct": 180.45870291160503,
+    "avg_win_rate": 0.46281715188605843,
+    "avg_trades_per_day": 2691.222222222222,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.0,
+      "boot_p_positive": 1.0,
+      "holm_significant": "True"
+    },
+    "fee_sensitivity": {
+      "0": 355.1789144975272,
+      "0.1": 180.45870291160503,
+      "0.2": 72.791222218219,
+      "0.5": -59.610873382702046
+    }
+  },
+  "BTC-USD": {
+    "avg_auc": 0.5992728212507235,
+    "total_return_pct": 55.7600682078691,
+    "avg_win_rate": 0.3771671729902504,
+    "avg_trades_per_day": 7721.333333333333,
+    "profitable_days": 8,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.025,
+      "boot_p_positive": 0.999,
+      "holm_significant": "False"
+    },
+    "fee_sensitivity": {
+      "0": 525.2281530018676,
+      "0.1": 55.7600682078691,
+      "0.2": -61.2055710473506,
+      "0.5": -99.40048925874581
+    }
+  },
+  "DOGE-USD": {
+    "avg_auc": 0.7116850402615843,
+    "total_return_pct": 783114.9950580598,
+    "avg_win_rate": 0.8620160236663014,
+    "avg_trades_per_day": 4963.888888888889,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.02,
+      "boot_p_positive": 1.0,
+      "holm_significant": "False"
+    },
+    "fee_sensitivity": {
+      "0": 1912964.1203425552,
+      "0.1": 783114.9950580598,
+      "0.2": 320429.23311720474,
+      "0.5": 21865.625875204518
+    }
+  },
+  "ETH-USD": {
+    "avg_auc": 0.6380832085073259,
+    "total_return_pct": 4433.455679179972,
+    "avg_win_rate": 0.4532614777594957,
+    "avg_trades_per_day": 11136.555555555555,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.005,
+      "boot_p_positive": 1.0,
+      "holm_significant": "True"
+    },
+    "fee_sensitivity": {
+      "0": 33543.53430030575,
+      "0.1": 4433.455679179972,
+      "0.2": 510.6803606025211,
+      "0.5": -98.50788085781097
+    }
+  },
+  "FARTCOIN-USD": {
+    "avg_auc": 0.6524138567347177,
+    "total_return_pct": 12424.826217461023,
+    "avg_win_rate": 0.7628875187955423,
+    "avg_trades_per_day": 1168.111111111111,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.0,
+      "boot_p_positive": 1.0,
+      "holm_significant": "True"
+    },
+    "fee_sensitivity": {
+      "0": 15353.17726224728,
+      "0.1": 12424.826217461023,
+      "0.2": 10051.439566560057,
+      "0.5": 5301.843596017997
+    }
+  },
+  "HBAR-USD": {
+    "avg_auc": 0.6807759384738862,
+    "total_return_pct": 563275.647860108,
+    "avg_win_rate": 0.8563623358077344,
+    "avg_trades_per_day": 4307.777777777777,
+    "profitable_days": 9,
+    "total_days": 9,
+    "statistical_validation": {
+      "perm_p_value": 0.055,
+      "boot_p_positive": 1.0,
+      "holm_significant": "False"
+    },
+    "fee_sensitivity": {
+      "0": 1222786.626244539,
+      "0.1": 563275.647860108,
+      "0.2": 259379.82504414563,
+      "0.5": 25246.956411577914
+    }
+  }
+}

@@ -7,8 +7,8 @@ Complete guide for deploying Daedalus Market Data Pipeline on Raspberry Pi 4 for
 ```bash
 # Clone repo (if not done)
 cd ~
-git clone https://github.com/your-repo/market-data-pipeline.git
-cd market-data-pipeline
+git clone https://github.com/jp-quant/daedalus.git
+cd daedalus
 
 # Run automated setup
 chmod +x scripts/setup_pi4.sh
@@ -30,7 +30,7 @@ This will:
 ### 1. Virtual Environment
 
 ```bash
-cd ~/market-data-pipeline
+cd ~/daedalus
 
 # Create venv
 python3 -m venv venv
@@ -139,8 +139,8 @@ sudo systemctl status daedalus
 journalctl -u daedalus -f
 
 # View process-specific logs
-tail -f ~/market-data-pipeline/logs/ingestion.log
-tail -f ~/market-data-pipeline/logs/sync.log
+tail -f ~/daedalus/logs/ingestion.log
+tail -f ~/daedalus/logs/sync.log
 ```
 
 ---
@@ -306,10 +306,10 @@ journalctl -k | grep -i "out of memory"
 
 ```bash
 # Ingestion logs
-tail -f ~/market-data-pipeline/logs/ingestion.log
+tail -f ~/daedalus/logs/ingestion.log
 
 # Sync logs
-tail -f ~/market-data-pipeline/logs/sync.log
+tail -f ~/daedalus/logs/sync.log
 
 # Systemd logs
 journalctl -u daedalus -f

@@ -515,6 +515,124 @@ This is because short trades in crypto markets face a positive drift (crypto ten
 
 ---
 
+## 18. Multi-Timeframe Ensemble (NB06)
+
+### 18.1 Per-Horizon Models
+
+Train separate XGBoost classifiers $\hat{f}_h$ for each horizon $h \in \{30s, 60s, 120s\}$:
+
+$$\hat{p}_h(t) = \hat{f}_h\bigl(\mathbf{x}(t)\bigr) \in [0, 1]$$
+
+where $\hat{p}_h(t)$ is the predicted probability that the price moves up over horizon $h$.
+
+### 18.2 AUC-Weighted Ensemble
+
+Given per-horizon AUC scores $a_h$ on the training fold, the ensemble probability is:
+
+$$\hat{p}_{\text{ens}}(t) = \frac{\sum_{h} a_h \cdot \hat{p}_h(t)}{\sum_{h} a_h}$$
+
+Position signal: $\text{pos}(t) = \begin{cases} +1 & \text{if } \hat{p}_{\text{ens}}(t) > 0.6 \\ -1 & \text{if } \hat{p}_{\text{ens}}(t) < 0.4 \\ 0 & \text{otherwise} \end{cases}$
+
+### 18.3 Simple Average Ensemble
+
+$$\hat{p}_{\text{avg}}(t) = \frac{1}{|H|}\sum_{h \in H} \hat{p}_h(t)$$
+
+### 18.4 Agreement Filter Ensemble
+
+Uses the best-horizon (30s) model but only trades when a majority of horizons agree:
+
+$$\text{agree}(t) = \mathbb{1}\!\left[\sum_{h} \mathbb{1}[\hat{p}_h(t) > 0.5] \geq \lceil|H|/2\rceil\right]$$
+
+$$\text{pos}(t) = \text{pos}_{30s}(t) \cdot \text{agree}(t)$$
+
+### 18.5 Empirical Finding
+
+30s standalone dominates all ensemble methods. Returns scale inversely with horizon AUC degradation:
+
+$$\text{AUC}_{30s} \approx 0.77 > \text{AUC}_{60s} \approx 0.70 > \text{AUC}_{120s} \approx 0.64$$
+
+Ensembles dilute the strongest (30s) signal with weaker horizons.
+
+---
+
+## 19. Dynamic Asset Allocation (NB06)
+
+### 19.1 Equal Weight
+
+$$w_i^{\text{EW}} = \frac{1}{N}, \quad \forall i \in \{1, \ldots, N\}$$
+
+### 19.2 AUC-Weighted
+
+Given daily AUC estimates $a_i$ per asset $i$:
+
+$$w_i^{\text{AUC}} = \frac{a_i}{\sum_{j=1}^{N} a_j}$$
+
+### 19.3 Momentum Weighting
+
+Using trailing $k$-day cumulative return $R_i^{(k)}$:
+
+$$w_i^{\text{mom}} = \frac{\max(R_i^{(k)}, 0)}{\sum_{j=1}^{N} \max(R_j^{(k)}, 0)}$$
+
+Assets with non-positive trailing returns receive zero weight. If all assets have non-positive returns, revert to equal weight.
+
+### 19.4 Inverse Volatility
+
+Using trailing realized volatility $\sigma_i$:
+
+$$w_i^{\text{IV}} = \frac{1/\sigma_i}{\sum_{j=1}^{N} 1/\sigma_j}$$
+
+### 19.5 Portfolio Return
+
+$$R_{\text{port}}(t) = \sum_{i=1}^{N} w_i(t) \cdot R_i(t)$$
+
+Weights are rebalanced daily. Compounding over $D$ days:
+
+$$R_{\text{total}} = \prod_{d=1}^{D} \bigl(1 + R_{\text{port}}(d)\bigr) - 1$$
+
+---
+
+## 20. Feature Interaction Engineering (NB06)
+
+### 20.1 Ratio Features
+
+Constructed to capture interaction between imbalance and volatility:
+
+$$\text{imb\_L3\_div\_rv60} = \frac{\text{imbalance\_L3}}{\text{rv\_60s\_right} + \epsilon}$$
+
+$$\text{ofi5\_div\_spread} = \frac{\text{ofi\_sum\_5s}}{\text{relative\_spread} + \epsilon}$$
+
+$$\text{micro\_div\_spread} = \frac{\text{micro\_minus\_mid}}{\text{relative\_spread} + \epsilon}$$
+
+where $\epsilon = 10^{-10}$ prevents division by zero.
+
+### 20.2 Product Features
+
+$$\text{imb\_L3\_x\_rv60} = \text{imbalance\_L3} \times \text{rv\_60s\_right}$$
+
+$$\text{cog\_imb\_interaction} = \text{cog\_vs\_mid} \times \text{imbalance\_L3}$$
+
+### 20.3 Gradient Features
+
+Capture how imbalance changes across depth levels:
+
+$$\text{imb\_gradient\_L1\_L3} = \text{imbalance\_L1} - \text{imbalance\_L3}$$
+$$\text{imb\_gradient\_L3\_L5} = \text{imbalance\_L3} - \text{imbalance\_L5}$$
+$$\text{imb\_gradient\_L1\_L10} = \text{imbalance\_L1} - \text{imbalance\_L10}$$
+
+### 20.4 Composite Features
+
+$$\text{depth\_asymmetry} = \frac{\text{total\_bid\_depth} - \text{total\_ask\_depth}}{\text{total\_bid\_depth} + \text{total\_ask\_depth} + \epsilon}$$
+
+$$\text{smart\_depth\_ratio} = \frac{\text{smart\_bid\_depth}}{\text{smart\_ask\_depth} + \epsilon}$$
+
+$$\text{momentum\_imb\_agreement} = \text{sign}(\text{log\_return}) \cdot \text{imbalance\_L3}$$
+
+$$\text{vol\_regime\_ratio} = \frac{\text{rv\_5s\_right}}{\text{rv\_60s\_right} + \epsilon}$$
+
+$$\text{ofi\_accel} = \text{ofi\_sum\_5s} - \text{ofi\_sum\_30s}$$
+
+---
+
 ## References
 
 1. **Kelly, J. L.** (1956). A New Interpretation of Information Rate. *Bell System Technical Journal*, 35(4), 917-926.
@@ -531,5 +649,5 @@ This is because short trades in crypto markets face a positive drift (crypto ten
 
 ---
 
-*Document version: 3.0*  
-*Last updated: February 12, 2026*
+*Document version: 4.0*  
+*Last updated: February 13, 2026*
