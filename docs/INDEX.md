@@ -53,6 +53,10 @@ This document provides a map of all documentation and quick access to key inform
 
 | Document | Purpose | Read When |
 |----------|---------|-----------|
+| [`../etl/README.md`](../etl/README.md) | ETL operational overview + quick start | Starting ETL-focused work |
+| [`../etl/ETL_AGENT_PROMPT.md`](../etl/ETL_AGENT_PROMPT.md) | ETL-specific Copilot onboarding prompt | New ETL agent sessions |
+| [`../etl/docs/ETL_CONTEXT.md`](../etl/docs/ETL_CONTEXT.md) | ETL context, priorities, session trail | Continuing ETL revamp work |
+| [`../etl/docs/IMPLEMENTATION_APPENDIX.md`](../etl/docs/IMPLEMENTATION_APPENDIX.md) | ETL formulas, invariants, contracts | Verifying correctness constraints |
 | [`ETL_CORE_FRAMEWORK.md`](ETL_CORE_FRAMEWORK.md) | **NEW** Core ETL framework guide | Building/extending transforms |
 | [`PARQUET_ETL_ARCHITECTURE.md`](PARQUET_ETL_ARCHITECTURE.md) | Parquet ETL architecture decisions | Understanding design rationale |
 | [`ETL_REFACTOR_DESIGN.md`](ETL_REFACTOR_DESIGN.md) | Refactor history and design | Historical context |
